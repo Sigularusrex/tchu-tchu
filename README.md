@@ -314,6 +314,15 @@ def create_information_request(request):
 - **Graceful fallback** if no workers available
 - Discovery happens on each publish (ensures fresh task list)
 
+### Important Notes
+
+When using auto-discovery with multiple consumers:
+- **All discovered tasks are sent** to the broker
+- **Each worker processes only its tasks** and ignores others
+- You may see `"Received unregistered task"` errors in logs - **this is normal**
+- Celery automatically discards tasks that workers don't recognize
+- To suppress these log messages, configure `task_reject_on_worker_lost=True`
+
 ### Multiple Consumers for One Event
 
 Just subscribe in each app - automatic discovery finds them all:
@@ -350,6 +359,15 @@ register_remote_task(
 - Make sure consumer called `subscribe()` during startup
 - Check worker logs to confirm task is registered
 
+**"Received unregistered task" errors**:
+- **This is normal with auto-discovery!** When multiple apps subscribe to the same topic, all tasks are sent to the broker and workers ignore tasks they don't have
+- The system is working correctly - these are just informational warnings
+- To suppress these errors, add to your Celery config:
+  ```python
+  # Celery will silently ignore unregistered tasks instead of logging errors
+  app.conf.task_reject_on_worker_lost = True
+  ```
+
 **Discovery timeout warnings**:
 - Normal if no workers running yet
 - Increase timeout if needed (default 1 second)
@@ -371,6 +389,8 @@ app.config_from_object({
     'result_serializer': 'json',
     'timezone': 'UTC',
     'enable_utc': True,
+    # Recommended: Suppress "unregistered task" errors with auto-discovery
+    'task_reject_on_worker_lost': True,
 })
 
 # Use with tchu-tchu
@@ -524,6 +544,13 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### v1.3.1
+- **DOCS**: Added explanation for "Received unregistered task" warnings
+- Clarified that these warnings are normal with auto-discovery
+- Added Celery config recommendation: `task_reject_on_worker_lost=True`
+- Updated cross-app communication documentation with important notes
+- System works correctly - warnings are informational only
 
 ### v1.3.0
 - **AUTOMATIC TASK DISCOVERY**: No manual registration needed for cross-app communication! 🎉
