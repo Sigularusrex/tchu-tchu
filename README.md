@@ -536,6 +536,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.2.1
+- **IMPROVED**: `publish()` now logs warning instead of raising exception when no handlers found
+- Better for model signal-triggered events that may not always have handlers
+- RPC `call()` still raises exception (as you expect a response)
+- More helpful warning message explaining when this is normal behavior
+
 ### v1.2.0
 - **PROPER CELERY IMPLEMENTATION**: Cross-app messaging using `send_task()` 
 - New `register_remote_task()` function for registering remote handlers

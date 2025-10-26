@@ -79,24 +79,23 @@ class CeleryProducer:
             if not handlers:
                 logger.warning(
                     f"No handlers registered for topic '{routing_key}'. "
-                    f"Make sure you've called subscribe() or registered task proxies."
+                    f"Message will be discarded. If this is intentional (e.g., model signals), this is normal. "
+                    f"Otherwise, call subscribe() or register_remote_task() to handle this topic."
                 )
                 return
-            
+
             # Send message to all registered handlers in parallel
             # Use send_task() which works across all workers via the broker
             task_results = []
             for handler_info in handlers:
                 try:
                     task_name = handler_info["metadata"].get("task_name")
-                    
+
                     # Always use send_task() - the proper Celery way
                     # This sends the task to the broker, which routes it to any
                     # worker that has this task registered, regardless of which app
                     result = self.celery_app.send_task(
-                        task_name,
-                        args=[serialized_body],
-                        **kwargs
+                        task_name, args=[serialized_body], **kwargs
                     )
                     task_results.append(result)
                     log_message_published(logger, routing_key, result.id)
@@ -178,9 +177,7 @@ class CeleryProducer:
 
                     # Use send_task() - works across all workers
                     result = self.celery_app.send_task(
-                        task_name,
-                        args=[serialized_body],
-                        **kwargs
+                        task_name, args=[serialized_body], **kwargs
                     )
                     task_results.append(result)
                     log_message_published(logger, routing_key, result.id)
