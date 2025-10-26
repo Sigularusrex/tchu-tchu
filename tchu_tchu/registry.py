@@ -31,7 +31,7 @@ class TopicRegistry:
     def register_handler(
         self,
         topic: str,
-        handler: Callable,
+        handler: Optional[Callable],
         handler_name: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -40,7 +40,7 @@ class TopicRegistry:
 
         Args:
             topic: Topic pattern (supports wildcards like "user.*")
-            handler: Handler function to call
+            handler: Handler function to call (None for remote task proxies)
             handler_name: Optional custom handler name
             metadata: Optional metadata to store with handler
 

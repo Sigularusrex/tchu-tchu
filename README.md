@@ -252,27 +252,20 @@ client.publish("user.created", {
 
 ## Cross-App Communication
 
-`tchu-tchu` supports publishing events from one app and consuming them in another. Here's what you need to know:
+`tchu-tchu` uses Celery's routing system for cross-app messaging. Publisher apps need to register remote tasks as proxies.
 
 ### Requirements
 
 1. **Shared Celery Broker**: All apps must connect to the same Redis/RabbitMQ broker
-2. **Same Celery App Name**: Not required, but recommended for consistency
-3. **Task Discovery**: Consumer apps must be running before publishing (so tasks are registered)
+2. **Task Name**: Know the full task name registered by the consumer app
 
 ### Setup Example
 
-**App A (Consumer - Scranton Service):**
+**Step 1: Consumer App (Scranton Service) - Register Handler:**
 ```python
-# scranton/celery.py
-from celery import Celery
-
-app = Celery('greencast')
-app.config_from_object('django.conf:settings', namespace='CELERY')
-app.autodiscover_tasks()
-
 # scranton/subscribers/information_request_subscriber.py
 from tchu_tchu.events import TchuEvent
+import celery
 
 class InformationRequestPreparedEvent(TchuEvent):
     class Meta:
@@ -282,49 +275,95 @@ class InformationRequestPreparedEvent(TchuEvent):
 @celery.shared_task
 def execute_information_request_task(event, **kwargs):
     # Handle the event
-    pass
+    information_request_data = event.get("information_request")
+    serializer = InformationRequestSerializer(
+        data=information_request_data,
+        context=event.request_context
+    )
+    if serializer.is_valid():
+        return serializer.save()
 
-# Register the handler
+# Subscribe - creates task: tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task
 InformationRequestPreparedEvent(handler=execute_information_request_task).subscribe()
 ```
 
-**App B (Publisher - API Service):**
+**Step 2: Publisher App (API/Pulse Service) - Register Remote Task:**
 ```python
-# api/views.py
+# api/apps.py or pulse/__init__.py
+from tchu_tchu import register_remote_task
+
+def ready():
+    # Register the remote task from Scranton service
+    register_remote_task(
+        topic="coolset.scranton.information_request.prepared",
+        task_name="tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task"
+    )
+```
+
+**Step 3: Publish from Any App:**
+```python
+# api/views.py or pulse/views.py
 from scranton.events import InformationRequestPreparedEvent
 
 def create_information_request(request):
-    # Publish event - will be handled by Scranton service
     event = InformationRequestPreparedEvent()
     event.serialize_request(
         {"information_request": {"order_id": 123}},
         context={"request": request}
     )
-    event.publish()  # Scranton service will receive this!
+    event.publish()  # Routes to Scranton worker via Celery!
 ```
 
-### How It Works
+### How It Works (The Proper Celery Way)
 
-1. **Consumer App Starts**: Registers Celery tasks with predictable names like:
-   ```
-   tchu_tchu.topics.coolset_scranton_information_request_prepared.execute_information_request_task
-   ```
+1. **Consumer registers task**: `subscribe()` creates a Celery `@shared_task` with a predictable name
+2. **Publisher registers proxy**: `register_remote_task()` tells the publisher about the remote task name
+3. **Publisher uses `send_task()`**: Sends task by name to Celery broker
+4. **Celery routes it**: Broker routes to any worker with that task registered (the consumer)
 
-2. **Publisher Discovers Tasks**: When publishing, checks Celery's task registry for matching tasks across all connected apps
+### Multiple Consumers for One Event
 
-3. **Message Routing**: Celery routes the task to the appropriate worker (could be same or different app)
+Register handlers with different names in each app:
+
+```python
+# Scranton app
+InformationRequestPreparedEvent(handler=execute_in_scranton).subscribe()
+# Creates: tchu_tchu.topics....execute_in_scranton
+
+# Pulse app  
+InformationRequestPreparedEvent(handler=execute_in_pulse).subscribe()
+# Creates: tchu_tchu.topics....execute_in_pulse
+
+# Publisher app - register both
+register_remote_task(topic, "tchu_tchu.topics....execute_in_scranton")
+register_remote_task(topic, "tchu_tchu.topics....execute_in_pulse")
+```
+
+Now when you publish, BOTH apps will process the event!
+
+### Finding Task Names
+
+Check your consumer app's Celery worker logs when it starts:
+```
+[tasks]
+  . tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task
+```
+
+Or use Celery inspect:
+```bash
+celery -A your_app inspect registered
+```
 
 ### Troubleshooting
 
-**"No handlers found for topic"** warning:
-- Make sure the consumer app is running and has registered its handlers
-- Check that both apps connect to the same Celery broker
-- Verify the topic names match exactly between publisher and subscriber
+**"No handlers found for topic"**:
+- Publisher app needs to call `register_remote_task()` for each remote handler
+- Make sure task name matches exactly (copy from consumer logs)
 
-**Tasks not being discovered:**
-- Ensure consumer app's Celery workers are running: `celery -A myapp worker`
-- Check that `subscribe()` was called during app startup (not just defined)
-- Verify Celery broker URL is the same across apps
+**Task not executing**:
+- Verify consumer app's Celery worker is running
+- Check both apps use the same broker URL
+- Confirm task name is correct
 
 ## Configuration
 
@@ -497,13 +536,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.2.0
+- **PROPER CELERY IMPLEMENTATION**: Cross-app messaging using `send_task()` 
+- New `register_remote_task()` function for registering remote handlers
+- Producer now uses `send_task()` instead of `apply_async()` for proper cross-worker routing
+- Simplified architecture - no complex task discovery needed
+- Publisher apps explicitly register remote tasks as proxies
+- Follows Celery best practices for distributed task execution
+- Comprehensive cross-app communication documentation
+
 ### v1.1.0
-- **MAJOR FIX**: Cross-app event handling now works correctly
-- Producer now discovers Celery tasks across all apps in the cluster, not just local registry
-- Events published from App A can now trigger handlers registered in App B
-- Uses Celery's task registry for task discovery instead of in-memory registry only
-- Better logging when no handlers are found for a topic
-- Compatible with distributed microservices architecture
+- Initial attempt at cross-app event handling (improved in v1.2.0)
+- Task discovery across apps
+- Better logging for missing handlers
 
 ### v1.0.3
 - **CRITICAL FIX**: Properly handle DRF serializers with `EventAuthorizationSerializer` and HiddenFields

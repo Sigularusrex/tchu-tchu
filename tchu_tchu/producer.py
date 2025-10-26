@@ -72,73 +72,44 @@ class CeleryProducer:
             else:
                 serialized_body = self.serializer.serialize(body)
 
-            # First, try local registry handlers (same app)
-            local_handlers = self.registry.get_handlers(routing_key)
+            # Get all handlers from local registry
+            # The registry contains both local handlers and remote task proxies
+            handlers = self.registry.get_handlers(routing_key)
             
-            # Get task names that should exist across the cluster
-            # Format: tchu_tchu.topics.{topic_normalized}.*
-            topic_normalized = routing_key.replace('.', '_').replace('*', 'wildcard')
-            task_pattern = f"tchu_tchu.topics.{topic_normalized}."
+            if not handlers:
+                logger.warning(
+                    f"No handlers registered for topic '{routing_key}'. "
+                    f"Make sure you've called subscribe() or registered task proxies."
+                )
+                return
             
-            # Find all registered Celery tasks that match this topic
-            registered_tasks = []
-            for task_name in self.celery_app.tasks.keys():
-                if task_name.startswith(task_pattern):
-                    registered_tasks.append(task_name)
-            
-            # Combine local handlers and discovered tasks
+            # Send message to all registered handlers in parallel
+            # Use send_task() which works across all workers via the broker
             task_results = []
-            sent_task_names = set()
-            
-            # Send to local handlers first
-            for handler_info in local_handlers:
+            for handler_info in handlers:
                 try:
-                    task = handler_info["function"]
                     task_name = handler_info["metadata"].get("task_name")
                     
-                    # Apply the task asynchronously
-                    result = task.apply_async(args=[serialized_body], **kwargs)
+                    # Always use send_task() - the proper Celery way
+                    # This sends the task to the broker, which routes it to any
+                    # worker that has this task registered, regardless of which app
+                    result = self.celery_app.send_task(
+                        task_name,
+                        args=[serialized_body],
+                        **kwargs
+                    )
                     task_results.append(result)
-                    sent_task_names.add(task_name)
-                    
                     log_message_published(logger, routing_key, result.id)
 
                 except Exception as e:
                     log_error(
                         logger,
-                        f"Failed to send message to handler '{handler_info['name']}'",
+                        f"Failed to send message to task '{task_name}'",
                         e,
                         routing_key,
                     )
                     # Continue with other handlers even if one fails
                     continue
-            
-            # Send to remote tasks discovered in Celery
-            for task_name in registered_tasks:
-                if task_name not in sent_task_names:
-                    try:
-                        # Get the task from Celery's registry
-                        task = self.celery_app.tasks.get(task_name)
-                        if task:
-                            result = task.apply_async(args=[serialized_body], **kwargs)
-                            task_results.append(result)
-                            sent_task_names.add(task_name)
-                            log_message_published(logger, routing_key, result.id)
-                    except Exception as e:
-                        log_error(
-                            logger,
-                            f"Failed to send message to remote task '{task_name}'",
-                            e,
-                            routing_key,
-                        )
-                        continue
-
-            if not task_results:
-                logger.warning(
-                    f"No handlers found for topic '{routing_key}'. "
-                    f"Make sure consumer apps have started and registered their handlers."
-                )
-                return
 
             logger.info(
                 f"Published message to topic '{routing_key}' - {len(task_results)} handlers notified",
@@ -190,70 +161,41 @@ class CeleryProducer:
             else:
                 serialized_body = self.serializer.serialize(body)
 
-            # Get local handlers
-            local_handlers = self.registry.get_handlers(routing_key)
-            
-            # Get task names that should exist across the cluster
-            topic_normalized = routing_key.replace('.', '_').replace('*', 'wildcard')
-            task_pattern = f"tchu_tchu.topics.{topic_normalized}."
-            
-            # Find all registered Celery tasks that match this topic
-            registered_tasks = []
-            for task_name in self.celery_app.tasks.keys():
-                if task_name.startswith(task_pattern):
-                    registered_tasks.append(task_name)
+            # Get all handlers from registry
+            handlers = self.registry.get_handlers(routing_key)
 
-            # For RPC calls, we typically want the first handler's response
-            # Send to all handlers but return the first successful response
+            if not handlers:
+                raise PublishError(
+                    f"No handlers registered for topic '{routing_key}'. "
+                    f"Make sure you've called subscribe() or registered task proxies."
+                )
+
+            # For RPC calls, send to all handlers and return the first response
             task_results = []
-            sent_task_names = set()
-
-            # Send to local handlers first
-            for handler_info in local_handlers:
+            for handler_info in handlers:
                 try:
-                    task = handler_info["function"]
                     task_name = handler_info["metadata"].get("task_name")
 
-                    # Apply the task asynchronously
-                    result = task.apply_async(args=[serialized_body], **kwargs)
+                    # Use send_task() - works across all workers
+                    result = self.celery_app.send_task(
+                        task_name,
+                        args=[serialized_body],
+                        **kwargs
+                    )
                     task_results.append(result)
-                    sent_task_names.add(task_name)
-
                     log_message_published(logger, routing_key, result.id)
 
                 except Exception as e:
                     log_error(
                         logger,
-                        f"Failed to send RPC message to handler '{handler_info['name']}'",
+                        f"Failed to send RPC message to task '{task_name}'",
                         e,
                         routing_key,
                     )
                     continue
-            
-            # Send to remote tasks discovered in Celery
-            for task_name in registered_tasks:
-                if task_name not in sent_task_names:
-                    try:
-                        task = self.celery_app.tasks.get(task_name)
-                        if task:
-                            result = task.apply_async(args=[serialized_body], **kwargs)
-                            task_results.append(result)
-                            sent_task_names.add(task_name)
-                            log_message_published(logger, routing_key, result.id)
-                    except Exception as e:
-                        log_error(
-                            logger,
-                            f"Failed to send RPC message to remote task '{task_name}'",
-                            e,
-                            routing_key,
-                        )
-                        continue
 
             if not task_results:
-                raise PublishError(
-                    f"No handlers found for topic '{routing_key}'. "
-                    f"Make sure consumer apps have started and registered their handlers."
-                )
+                raise PublishError("Failed to send message to any handlers")
 
             # Wait for the first result to complete
             primary_result = task_results[0]

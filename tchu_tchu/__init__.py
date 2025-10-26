@@ -7,7 +7,7 @@ robust task management system while maintaining backward compatibility through a
 
 from tchu_tchu.client import TchuClient
 from tchu_tchu.producer import CeleryProducer
-from tchu_tchu.subscriber import subscribe
+from tchu_tchu.subscriber import subscribe, register_remote_task
 from tchu_tchu.events import TchuEvent
 from tchu_tchu.version import __version__
 
@@ -15,6 +15,7 @@ __all__ = [
     "TchuClient",
     "CeleryProducer",
     "subscribe",
+    "register_remote_task",
     "TchuEvent",
     "__version__",
 ]

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tchu-tchu"
-version = "1.1.0"
+version = "1.2.0"
 description = "A modern Celery-based messaging library with Pydantic serialization and Django integration"
 authors = ["David Sigley <djsigley@gmail.com>"]
 license = "MIT"
