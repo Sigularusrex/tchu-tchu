@@ -252,14 +252,14 @@ client.publish("user.created", {
 
 ## Cross-App Communication
 
-`tchu-tchu` uses Celery's routing system for cross-app messaging. Publisher apps need to register remote tasks as proxies.
+`tchu-tchu` **automatically discovers** tasks from all active workers! Just subscribe in consumer apps, and publishers will automatically find and route to them.
 
 ### Requirements
 
 1. **Shared Celery Broker**: All apps must connect to the same Redis/RabbitMQ broker
-2. **Task Name**: Know the full task name registered by the consumer app
+2. **Consumer Workers Running**: Consumer apps must be running when publisher sends messages
 
-### Setup Example
+### Setup Example (Automatic Discovery)
 
 **Step 1: Consumer App (Scranton Service) - Register Handler:**
 ```python
@@ -283,24 +283,11 @@ def execute_information_request_task(event, **kwargs):
     if serializer.is_valid():
         return serializer.save()
 
-# Subscribe - creates task: tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task
+# Subscribe - task is auto-discoverable by other apps!
 InformationRequestPreparedEvent(handler=execute_information_request_task).subscribe()
 ```
 
-**Step 2: Publisher App (API/Pulse Service) - Register Remote Task:**
-```python
-# api/apps.py or pulse/__init__.py
-from tchu_tchu import register_remote_task
-
-def ready():
-    # Register the remote task from Scranton service
-    register_remote_task(
-        topic="coolset.scranton.information_request.prepared",
-        task_name="tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task"
-    )
-```
-
-**Step 3: Publish from Any App:**
+**Step 2: Publisher App - Just Publish! (No Registration Needed)**
 ```python
 # api/views.py or pulse/views.py
 from scranton.events import InformationRequestPreparedEvent
@@ -311,59 +298,61 @@ def create_information_request(request):
         {"information_request": {"order_id": 123}},
         context={"request": request}
     )
-    event.publish()  # Routes to Scranton worker via Celery!
+    event.publish()  # Auto-discovers and routes to Scranton worker!
 ```
 
-### How It Works (The Proper Celery Way)
+### How It Works (Automatic Discovery)
 
-1. **Consumer registers task**: `subscribe()` creates a Celery `@shared_task` with a predictable name
-2. **Publisher registers proxy**: `register_remote_task()` tells the publisher about the remote task name
-3. **Publisher uses `send_task()`**: Sends task by name to Celery broker
-4. **Celery routes it**: Broker routes to any worker with that task registered (the consumer)
+1. **Consumer registers task**: `subscribe()` creates a Celery `@shared_task`
+2. **Publisher auto-discovers**: Uses `celery.control.inspect()` to find tasks on all workers
+3. **Publisher routes via `send_task()`**: Sends to broker by task name
+4. **Celery delivers**: Broker routes to the appropriate worker
+
+### Performance
+
+- **1-second timeout** for task discovery (doesn't block requests)
+- **Graceful fallback** if no workers available
+- Discovery happens on each publish (ensures fresh task list)
 
 ### Multiple Consumers for One Event
 
-Register handlers with different names in each app:
+Just subscribe in each app - automatic discovery finds them all:
 
 ```python
 # Scranton app
 InformationRequestPreparedEvent(handler=execute_in_scranton).subscribe()
-# Creates: tchu_tchu.topics....execute_in_scranton
 
 # Pulse app  
 InformationRequestPreparedEvent(handler=execute_in_pulse).subscribe()
-# Creates: tchu_tchu.topics....execute_in_pulse
 
-# Publisher app - register both
-register_remote_task(topic, "tchu_tchu.topics....execute_in_scranton")
-register_remote_task(topic, "tchu_tchu.topics....execute_in_pulse")
+# Publisher app - just publish!
+event.publish()  # Both handlers auto-discovered and executed!
 ```
 
-Now when you publish, BOTH apps will process the event!
+### Manual Registration (Optional)
 
-### Finding Task Names
+If you prefer explicit registration or need it for some reason:
 
-Check your consumer app's Celery worker logs when it starts:
-```
-[tasks]
-  . tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task
-```
+```python
+from tchu_tchu import register_remote_task
 
-Or use Celery inspect:
-```bash
-celery -A your_app inspect registered
+register_remote_task(
+    "coolset.scranton.information_request.prepared",
+    "tchu_tchu.topics.coolset_scranton_information_request_prepared.InformationRequestPreparedEvent_execute_information_request_task"
+)
 ```
 
 ### Troubleshooting
 
 **"No handlers found for topic"**:
-- Publisher app needs to call `register_remote_task()` for each remote handler
-- Make sure task name matches exactly (copy from consumer logs)
+- Verify consumer app's Celery workers are running
+- Check both apps use the same broker URL (Redis/RabbitMQ)
+- Make sure consumer called `subscribe()` during startup
+- Check worker logs to confirm task is registered
 
-**Task not executing**:
-- Verify consumer app's Celery worker is running
-- Check both apps use the same broker URL
-- Confirm task name is correct
+**Discovery timeout warnings**:
+- Normal if no workers running yet
+- Increase timeout if needed (default 1 second)
 
 ## Configuration
 
@@ -535,6 +524,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### v1.3.0
+- **AUTOMATIC TASK DISCOVERY**: No manual registration needed for cross-app communication! 🎉
+- Producer automatically discovers tasks from all active workers via Celery inspect
+- Just subscribe in consumer apps - publishers automatically find and route to them
+- Falls back gracefully if inspection fails (e.g., no workers running)
+- 1-second timeout for discovery to avoid blocking requests
+- Works with both `publish()` and `call()` methods
+- `register_remote_task()` still available but no longer required
 
 ### v1.2.1
 - **IMPROVED**: `publish()` now logs warning instead of raising exception when no handlers found

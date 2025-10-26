@@ -73,14 +73,50 @@ class CeleryProducer:
                 serialized_body = self.serializer.serialize(body)
 
             # Get all handlers from local registry
-            # The registry contains both local handlers and remote task proxies
             handlers = self.registry.get_handlers(routing_key)
+            
+            # AUTO-DISCOVERY: Check for remote tasks matching this topic
+            # This allows cross-app messaging without manual registration
+            topic_normalized = routing_key.replace('.', '_').replace('*', 'wildcard')
+            task_pattern = f"tchu_tchu.topics.{topic_normalized}."
+            
+            # Discover tasks from all active workers via Celery inspect
+            try:
+                inspect = self.celery_app.control.inspect(timeout=1.0)
+                registered_tasks = inspect.registered()
+                
+                if registered_tasks:
+                    # registered_tasks is a dict: {worker_name: [task_names]}
+                    all_tasks = set()
+                    for worker_tasks in registered_tasks.values():
+                        all_tasks.update(worker_tasks)
+                    
+                    # Find matching tasks that aren't already in our handlers
+                    handler_task_names = {h["metadata"].get("task_name") for h in handlers}
+                    
+                    for task_name in all_tasks:
+                        if task_name.startswith(task_pattern) and task_name not in handler_task_names:
+                            # Found a remote task! Add it to handlers
+                            handlers.append({
+                                "id": f"discovered_{task_name}",
+                                "name": task_name.split('.')[-1],
+                                "function": None,  # Remote task, no local function
+                                "metadata": {
+                                    "task_name": task_name,
+                                    "is_remote_proxy": True,
+                                    "auto_discovered": True,
+                                }
+                            })
+                            logger.debug(f"Auto-discovered remote task: {task_name}")
+            except Exception as e:
+                # Inspection failed - maybe no workers available or timeout
+                # This is not critical, just log and continue with local handlers
+                logger.debug(f"Task auto-discovery failed (this is normal if no remote workers): {e}")
             
             if not handlers:
                 logger.warning(
-                    f"No handlers registered for topic '{routing_key}'. "
-                    f"Message will be discarded. If this is intentional (e.g., model signals), this is normal. "
-                    f"Otherwise, call subscribe() or register_remote_task() to handle this topic."
+                    f"No handlers found for topic '{routing_key}' (checked local registry and remote workers). "
+                    f"Message will be discarded. If this is intentional (e.g., model signals), this is normal."
                 )
                 return
 
@@ -162,11 +198,41 @@ class CeleryProducer:
 
             # Get all handlers from registry
             handlers = self.registry.get_handlers(routing_key)
+            
+            # AUTO-DISCOVERY: Check for remote tasks matching this topic
+            topic_normalized = routing_key.replace('.', '_').replace('*', 'wildcard')
+            task_pattern = f"tchu_tchu.topics.{topic_normalized}."
+            
+            try:
+                inspect = self.celery_app.control.inspect(timeout=1.0)
+                registered_tasks = inspect.registered()
+                
+                if registered_tasks:
+                    all_tasks = set()
+                    for worker_tasks in registered_tasks.values():
+                        all_tasks.update(worker_tasks)
+                    
+                    handler_task_names = {h["metadata"].get("task_name") for h in handlers}
+                    
+                    for task_name in all_tasks:
+                        if task_name.startswith(task_pattern) and task_name not in handler_task_names:
+                            handlers.append({
+                                "id": f"discovered_{task_name}",
+                                "name": task_name.split('.')[-1],
+                                "function": None,
+                                "metadata": {
+                                    "task_name": task_name,
+                                    "is_remote_proxy": True,
+                                    "auto_discovered": True,
+                                }
+                            })
+                            logger.debug(f"Auto-discovered remote task for RPC: {task_name}")
+            except Exception as e:
+                logger.debug(f"Task auto-discovery failed for RPC: {e}")
 
             if not handlers:
                 raise PublishError(
-                    f"No handlers registered for topic '{routing_key}'. "
-                    f"Make sure you've called subscribe() or registered task proxies."
+                    f"No handlers found for topic '{routing_key}' (checked local registry and remote workers)."
                 )
 
             # For RPC calls, send to all handlers and return the first response
