@@ -504,6 +504,12 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
 
+### v2.0.1 (2025-10-26)
+
+**Fixed:**
+- Added missing `log_handler_executed()` function to logging handlers
+- Fixed ImportError when importing `create_topic_dispatcher`
+
 ### v2.0.0 (2025-10-26) - BREAKING CHANGE
 
 **Complete redesign** using RabbitMQ topic exchanges for true broadcast messaging.

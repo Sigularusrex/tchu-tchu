@@ -51,6 +51,19 @@ def log_message_received(
     logger.info("Message received", extra={"topic": topic, "task_id": task_id})
 
 
+def log_handler_executed(
+    logger: logging.Logger,
+    handler_name: str,
+    topic: str,
+    task_id: Optional[str] = None,
+) -> None:
+    """Log a handler execution event."""
+    logger.info(
+        f"Handler '{handler_name}' executed successfully",
+        extra={"handler": handler_name, "topic": topic, "task_id": task_id},
+    )
+
+
 def log_rpc_call(
     logger: logging.Logger,
     topic: str,

@@ -179,7 +179,7 @@ class TchuEvent:
             f"{self.__class__.__name__}_{getattr(self.handler, '__name__', 'handler')}"
         )
         handler_id = f"{self.__class__.__module__}.{self.__class__.__name__}.{getattr(self.handler, '__name__', 'handler')}"
-        
+
         registry = get_registry()
         return registry.register_handler(
             routing_key=self.topic,
