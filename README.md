@@ -66,9 +66,29 @@ Each microservice needs to configure its Celery app to consume from a queue boun
 from celery import Celery
 from kombu import Exchange, Queue
 from tchu_tchu import create_topic_dispatcher
+from tchu_tchu.events import TchuEvent
 
 app = Celery('myapp')
 
+# ===== Configure context helper (for framework integration) =====
+# This is optional but recommended if you're using TchuEvent with request_context
+# Define your context reconstruction logic once here:
+def my_context_helper(event_data):
+    """Reconstruct request context from event data."""
+    # Your framework-specific logic (Django, Flask, etc.)
+    # See "Framework Integration" section for examples
+    from types import SimpleNamespace
+    user = event_data.get('user')
+    if user:
+        mock_request = SimpleNamespace()
+        mock_request.user = SimpleNamespace(**user)
+        return {'request': mock_request}
+    return {}
+
+# Set it globally for all events
+TchuEvent.set_context_helper(my_context_helper)
+
+# ===== Configure Celery queues and exchange =====
 # Define the topic exchange
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
@@ -337,53 +357,118 @@ event = MyEvent(context_helper=my_context_helper)
 
 ### Django Integration
 
-```python
-from tchu_tchu.events import TchuEvent
-from rest_framework import serializers
+**Recommended: Put context helper in your celery.py file**
 
-# 1. Define your Django context helper (once, in your app init)
+```python
+# myapp/celery.py
+from celery import Celery
+from kombu import Exchange, Queue
+from tchu_tchu import create_topic_dispatcher
+from tchu_tchu.events import TchuEvent
+
+# 1. Define your Django context helper
 def create_django_request_context(event_data):
+    """Reconstruct Django request context from event data."""
     from types import SimpleNamespace
     
     user_data = event_data.get("user")
-    if not user_data:
-        return {}
+    company_data = event_data.get("company")
+    user_company_data = event_data.get("user_company")
     
+    mock_request = SimpleNamespace()
+    
+    # If no auth data, return empty context
+    if not all([user_data, company_data, user_company_data]):
+        return {"request": mock_request}
+    
+    # Build mock user with company and user_company
     mock_user = SimpleNamespace()
     mock_user.id = user_data.get("id")
     mock_user.email = user_data.get("email")
-    # ... add other fields ...
+    mock_user.first_name = user_data.get("first_name")
+    mock_user.last_name = user_data.get("last_name")
     
-    mock_request = SimpleNamespace()
+    mock_user.company = SimpleNamespace()
+    mock_user.company.id = company_data.get("id")
+    mock_user.company.name = company_data.get("name")
+    
+    mock_user.user_company = SimpleNamespace()
+    mock_user.user_company.id = user_company_data.get("id")
+    
     mock_request.user = mock_user
     return {"request": mock_request}
 
-# Set it globally
+# Set it globally (runs when celery.py is imported)
 TchuEvent.set_context_helper(create_django_request_context)
 
-# 2. Define your events
-class UserCreatedEvent(TchuEvent):
-    topic = "user.created"
-    
-    class RequestSerializer(serializers.Serializer):
-        user_id = serializers.IntegerField()
-        email = serializers.EmailField()
-        name = serializers.CharField()
+# ... rest of your Celery configuration ...
+app = Celery('myapp')
+# etc.
+```
 
-# 3. Publish
-event = UserCreatedEvent(request_data={
+**Or: Create a separate helper module and import it**
+
+```python
+# myapp/events/django_context_helper.py
+from types import SimpleNamespace
+
+def create_django_request_context(event_data):
+    # ... same as above ...
+    pass
+
+# myapp/celery.py
+from tchu_tchu.events import TchuEvent
+from myapp.events.django_context_helper import create_django_request_context
+
+# Set it globally
+TchuEvent.set_context_helper(create_django_request_context)
+```
+
+**Then define your events:**
+
+```python
+# myapp/events.py
+from tchu_tchu.events import TchuEvent
+from rest_framework import serializers
+
+class UserCreatedEvent(TchuEvent):
+    class Meta:
+        topic = "user.created"
+        request_serializer_class = RequestSerializer
+    
+class RequestSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    email = serializers.EmailField()
+    name = serializers.CharField()
+```
+
+**Publish events:**
+
+```python
+# myapp/views.py
+event = UserCreatedEvent()
+event.serialize_request({
     'user_id': 123,
     'email': 'user@example.com',
     'name': 'John Doe'
 })
 event.publish()
+```
 
-# 4. Subscribe
+**Subscribe to events:**
+
+```python
+# myapp/subscribers.py
 from tchu_tchu import subscribe
 
 @subscribe('user.created')
 def handle_user_created(event_data):
     print(f"User {event_data['email']} was created")
+    
+    # Or use TchuEvent for context:
+    event = UserCreatedEvent()
+    event.serialize_request(event_data)
+    user_id = event.request_context['request'].user.id  # ✅ Works!
 ```
 
 ### Model Signal Integration
@@ -401,7 +486,7 @@ def publish_user_created(sender, instance, created, **kwargs):
         client.publish('user.created', {
             'user_id': instance.id,
             'email': instance.email
-        })
+})
 ```
 
 ## Configuration
