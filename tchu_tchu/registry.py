@@ -1,4 +1,4 @@
-"""Topic registry for managing topic-to-handler mappings."""
+"""Registry for managing routing key-to-handler mappings."""
 
 import re
 from typing import Dict, List, Callable, Any, Optional
@@ -13,10 +13,10 @@ logger = get_logger(__name__)
 
 class TopicRegistry:
     """
-    Global registry for managing topic-to-handler mappings.
+    Global registry for managing routing key-to-handler mappings.
 
     Supports:
-    - Multiple handlers per topic
+    - Multiple handlers per routing key
     - Wildcard pattern matching (e.g., "user.*")
     - Thread-safe operations
     - Handler metadata tracking
@@ -30,18 +30,20 @@ class TopicRegistry:
 
     def register_handler(
         self,
-        topic: str,
+        routing_key: str,
         handler: Optional[Callable],
-        handler_name: Optional[str] = None,
+        name: Optional[str] = None,
+        handler_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
-        Register a handler for a topic.
+        Register a handler for a routing key.
 
         Args:
-            topic: Topic pattern (supports wildcards like "user.*")
+            routing_key: Routing key pattern (supports wildcards like "user.*")
             handler: Handler function to call (None for remote task proxies)
-            handler_name: Optional custom handler name
+            name: Optional custom handler name
+            handler_id: Optional custom handler ID
             metadata: Optional metadata to store with handler
 
         Returns:
@@ -54,44 +56,47 @@ class TopicRegistry:
             try:
                 self._handler_counter += 1
 
-                if handler_name is None:
-                    handler_name = f"{getattr(handler, '__name__', 'handler')}_{self._handler_counter}"
+                if handler_id is None:
+                    handler_id = f"handler_{self._handler_counter}"
+
+                if name is None:
+                    name = f"{getattr(handler, '__name__', 'handler')}_{self._handler_counter}"
 
                 handler_info = {
-                    "id": f"handler_{self._handler_counter}",
-                    "name": handler_name,
+                    "id": handler_id,
+                    "name": name,
                     "function": handler,
-                    "topic": topic,
+                    "routing_key": routing_key,
                     "metadata": metadata or {},
                 }
 
-                # Check if topic contains wildcards
-                if "*" in topic or "?" in topic:
-                    self._pattern_handlers[topic].append(handler_info)
+                # Check if routing_key contains wildcards
+                if "*" in routing_key or "?" in routing_key:
+                    self._pattern_handlers[routing_key].append(handler_info)
                     logger.info(
-                        f"Registered pattern handler '{handler_name}' for topic pattern '{topic}'"
+                        f"Registered pattern handler '{name}' for routing key pattern '{routing_key}'"
                     )
                 else:
-                    self._handlers[topic].append(handler_info)
+                    self._handlers[routing_key].append(handler_info)
                     logger.info(
-                        f"Registered handler '{handler_name}' for topic '{topic}'"
+                        f"Registered handler '{name}' for routing key '{routing_key}'"
                     )
 
                 return handler_info["id"]
 
             except Exception as e:
                 logger.error(
-                    f"Failed to register handler for topic '{topic}': {e}",
+                    f"Failed to register handler for routing key '{routing_key}': {e}",
                     exc_info=True,
                 )
                 raise SubscriptionError(f"Failed to register handler: {e}")
 
-    def get_handlers(self, topic: str) -> List[Dict[str, Any]]:
+    def get_handlers(self, routing_key: str) -> List[Dict[str, Any]]:
         """
-        Get all handlers for a specific topic.
+        Get all handlers for a specific routing key.
 
         Args:
-            topic: Exact topic name
+            routing_key: Exact routing key
 
         Returns:
             List of handler info dictionaries
@@ -100,11 +105,11 @@ class TopicRegistry:
             handlers = []
 
             # Add exact match handlers
-            handlers.extend(self._handlers.get(topic, []))
+            handlers.extend(self._handlers.get(routing_key, []))
 
             # Add pattern match handlers
             for pattern, pattern_handlers in self._pattern_handlers.items():
-                if self._matches_pattern(topic, pattern):
+                if self._matches_pattern(routing_key, pattern):
                     handlers.extend(pattern_handlers)
 
             return handlers
@@ -121,12 +126,12 @@ class TopicRegistry:
         """
         with self._lock:
             # Search in exact handlers
-            for topic, handlers in self._handlers.items():
+            for routing_key, handlers in self._handlers.items():
                 for i, handler_info in enumerate(handlers):
                     if handler_info["id"] == handler_id:
                         removed_handler = handlers.pop(i)
                         logger.info(
-                            f"Unregistered handler '{removed_handler['name']}' from topic '{topic}'"
+                            f"Unregistered handler '{removed_handler['name']}' from routing key '{routing_key}'"
                         )
                         return True
 
@@ -142,28 +147,28 @@ class TopicRegistry:
 
             return False
 
-    def get_all_topics(self) -> List[str]:
-        """Get all registered topics (exact matches only)."""
+    def get_all_routing_keys(self) -> List[str]:
+        """Get all registered routing keys (exact matches only)."""
         with self._lock:
             return list(self._handlers.keys())
 
     def get_all_patterns(self) -> List[str]:
-        """Get all registered topic patterns."""
+        """Get all registered routing key patterns."""
         with self._lock:
             return list(self._pattern_handlers.keys())
 
-    def get_handler_count(self, topic: Optional[str] = None) -> int:
+    def get_handler_count(self, routing_key: Optional[str] = None) -> int:
         """
         Get count of handlers.
 
         Args:
-            topic: Optional specific topic to count handlers for
+            routing_key: Optional specific routing key to count handlers for
 
         Returns:
             Number of handlers
         """
         with self._lock:
-            if topic is None:
+            if routing_key is None:
                 # Count all handlers
                 total = sum(len(handlers) for handlers in self._handlers.values())
                 total += sum(
@@ -171,7 +176,7 @@ class TopicRegistry:
                 )
                 return total
             else:
-                return len(self.get_handlers(topic))
+                return len(self.get_handlers(routing_key))
 
     def clear(self) -> None:
         """Clear all registered handlers."""
@@ -181,16 +186,16 @@ class TopicRegistry:
             self._handler_counter = 0
             logger.info("Cleared all registered handlers")
 
-    def _matches_pattern(self, topic: str, pattern: str) -> bool:
+    def _matches_pattern(self, routing_key: str, pattern: str) -> bool:
         """
-        Check if a topic matches a wildcard pattern.
+        Check if a routing key matches a wildcard pattern.
 
         Args:
-            topic: Topic to check
+            routing_key: Routing key to check
             pattern: Pattern with wildcards (* and ?)
 
         Returns:
-            True if topic matches pattern
+            True if routing key matches pattern
         """
         # Convert wildcard pattern to regex
         # * matches any sequence of characters
@@ -199,10 +204,10 @@ class TopicRegistry:
         regex_pattern = f"^{regex_pattern}$"
 
         try:
-            return bool(re.match(regex_pattern, topic))
+            return bool(re.match(regex_pattern, routing_key))
         except re.error:
             logger.warning(f"Invalid pattern '{pattern}', treating as exact match")
-            return topic == pattern
+            return routing_key == pattern
 
 
 # Global registry instance

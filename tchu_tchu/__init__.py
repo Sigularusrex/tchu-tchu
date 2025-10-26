@@ -1,13 +1,16 @@
 """
-tchu-tchu: A modern Celery-based messaging library with Pydantic serialization and Django integration.
+tchu-tchu: A modern Celery-based messaging library with broadcast event support.
 
-This package provides a modern alternative to the original tchu package, leveraging Celery's
-robust task management system while maintaining backward compatibility through a familiar API.
+v2.0.0: Complete redesign using RabbitMQ topic exchanges for true broadcast messaging.
+- Multiple apps can subscribe to the same events
+- Uses existing Celery workers (no separate listener needed)
+- Fast and simple (no task discovery/inspection)
+- Compatible with the original tchu architecture
 """
 
 from tchu_tchu.client import TchuClient
 from tchu_tchu.producer import CeleryProducer
-from tchu_tchu.subscriber import subscribe, register_remote_task
+from tchu_tchu.subscriber import subscribe, create_topic_dispatcher, register_remote_task
 from tchu_tchu.events import TchuEvent
 from tchu_tchu.version import __version__
 
@@ -15,7 +18,8 @@ __all__ = [
     "TchuClient",
     "CeleryProducer",
     "subscribe",
-    "register_remote_task",
+    "create_topic_dispatcher",
+    "register_remote_task",  # Deprecated, kept for compatibility
     "TchuEvent",
     "__version__",
 ]
