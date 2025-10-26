@@ -25,7 +25,7 @@ def subscribe(
 ) -> Callable:
     """
     Decorator to subscribe a function to a topic routing key.
-    
+
     With the new broadcast architecture, handlers are registered locally
     and executed when messages arrive at the app's queue.
 
@@ -79,15 +79,15 @@ def create_topic_dispatcher(
 ) -> Callable:
     """
     Create a Celery task that dispatches messages to local handlers.
-    
+
     This task should be registered in your Celery app and will be called
     when messages arrive on your app's queue from the topic exchange.
-    
+
     Your Celery config should bind this task's queue to the tchu_events exchange:
-    
+
     ```python
     from kombu import Exchange, Queue
-    
+
     app.conf.task_queues = (
         Queue(
             'myapp_queue',  # Your app's unique queue
@@ -97,7 +97,7 @@ def create_topic_dispatcher(
             auto_delete=False,
         ),
     )
-    
+
     app.conf.task_routes = {
         'tchu_tchu.dispatch_event': {'queue': 'myapp_queue'},
     }
@@ -110,11 +110,11 @@ def create_topic_dispatcher(
 
     Returns:
         Celery task function that dispatches to local handlers
-        
+
     Example:
         # In your celery.py
         from tchu_tchu.subscriber import create_topic_dispatcher
-        
+
         dispatcher = create_topic_dispatcher(app)
     """
     _serializer = serializer or default_serializer
@@ -124,7 +124,7 @@ def create_topic_dispatcher(
     def dispatch_event(self, message_body: str, routing_key: Optional[str] = None):
         """
         Dispatcher task that routes messages to local handlers.
-        
+
         Args:
             message_body: Serialized message body
             routing_key: Topic routing key from AMQP delivery info
@@ -133,7 +133,7 @@ def create_topic_dispatcher(
         if routing_key is None:
             # Try to get from Celery task metadata
             routing_key = self.request.get("routing_key", "unknown")
-        
+
         log_message_received(logger, routing_key, self.request.id)
 
         try:
@@ -196,7 +196,9 @@ def create_topic_dispatcher(
             }
 
         except Exception as e:
-            log_error(logger, f"Failed to dispatch event for '{routing_key}'", e, routing_key)
+            log_error(
+                logger, f"Failed to dispatch event for '{routing_key}'", e, routing_key
+            )
             raise
 
     return dispatch_event
@@ -211,11 +213,11 @@ def register_remote_task(
 ) -> None:
     """
     Register a remote task proxy for cross-app communication.
-    
+
     Note: With the new broadcast architecture, this is no longer needed!
     Events are automatically broadcast to all apps that have queues bound
     to the topic exchange with matching routing keys.
-    
+
     This function is kept for backward compatibility but does nothing.
 
     Args:

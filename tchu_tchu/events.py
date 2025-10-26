@@ -4,7 +4,7 @@ from typing import Optional, Type, Callable, Dict, Any, Union
 from abc import ABC, abstractmethod
 
 from tchu_tchu.client import TchuClient
-from tchu_tchu.subscriber import subscribe
+from tchu_tchu.registry import get_registry
 from tchu_tchu.serializers.pydantic_serializer import PydanticSerializer
 from tchu_tchu.serializers.drf_to_pydantic import convert_drf_to_pydantic
 from tchu_tchu.utils.error_handling import SerializationError
@@ -174,11 +174,19 @@ class TchuEvent:
                 )
                 raise
 
-        # Subscribe the wrapper function
+        # Register the wrapper function directly with the registry
         handler_name = (
             f"{self.__class__.__name__}_{getattr(self.handler, '__name__', 'handler')}"
         )
-        return subscribe(self.topic, event_handler_wrapper, handler_name=handler_name)
+        handler_id = f"{self.__class__.__module__}.{self.__class__.__name__}.{getattr(self.handler, '__name__', 'handler')}"
+        
+        registry = get_registry()
+        return registry.register_handler(
+            routing_key=self.topic,
+            handler=event_handler_wrapper,
+            name=handler_name,
+            handler_id=handler_id,
+        )
 
     def serialize_request(
         self,

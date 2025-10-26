@@ -17,10 +17,10 @@ logger = get_logger(__name__)
 class CeleryProducer:
     """
     Celery producer that publishes to a topic exchange for broadcast messaging.
-    
+
     This uses Celery's send_task() with proper exchange/routing configuration
     to enable true broadcast: multiple apps can subscribe to the same events.
-    
+
     Key features:
     - Publishes to a topic exchange (not direct task calls)
     - Multiple apps receive the same message
@@ -56,7 +56,7 @@ class CeleryProducer:
     ) -> str:
         """
         Publish a message to a routing key (broadcast to all subscribers).
-        
+
         This sends a task to the dispatcher, which is configured to consume
         from queues bound to a topic exchange. All apps with matching queue
         bindings will receive the message.
@@ -89,7 +89,7 @@ class CeleryProducer:
             result = self.celery_app.send_task(
                 self.dispatcher_task_name,
                 args=[serialized_body],
-                kwargs={'routing_key': routing_key},
+                kwargs={"routing_key": routing_key},
                 routing_key=routing_key,  # This is used by AMQP for routing to queues
                 task_id=message_id,
             )
@@ -121,7 +121,7 @@ class CeleryProducer:
     ) -> Any:
         """
         Send a message and wait for a response (RPC-style).
-        
+
         Note: RPC pattern is more complex with broadcast exchanges.
         This will be implemented in a future version.
 
