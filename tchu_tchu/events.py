@@ -29,6 +29,12 @@ class TchuEvent:
     - request_serializer_class: DRF serializer for the event request payload
     - response_serializer_class: (optional) DRF serializer for the event response payload (RPC)
     - handler: (optional) function to handle the event when received
+    
+    For custom context reconstruction (e.g., Django auth, Flask user, etc.):
+        TchuEvent.set_context_helper(my_custom_helper)
+    
+    Or per-instance:
+        event = MyEvent(context_helper=my_custom_helper)
     """
 
     topic: str
@@ -37,6 +43,37 @@ class TchuEvent:
     handler: Optional[Callable] = None
     validated_data: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
+    
+    # Class-level context helper (can be set globally)
+    _context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+    
+    @classmethod
+    def set_context_helper(cls, helper: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
+        """
+        Set a global context helper for reconstructing request context from event data.
+        
+        This allows framework-specific logic (Django auth, Flask user, etc.) to be
+        injected without making tchu-tchu dependent on any specific framework.
+        
+        Args:
+            helper: Function that takes event data dict and returns context dict
+            
+        Example:
+            def django_context_helper(event_data):
+                user = event_data.get('user')
+                company = event_data.get('company')
+                # ... reconstruct Django request mock ...
+                return {'request': mock_request}
+            
+            TchuEvent.set_context_helper(django_context_helper)
+        """
+        cls._context_helper = helper
+        logger.info(f"Set global context helper: {helper.__name__}")
+    
+    @classmethod
+    def get_context_helper(cls) -> Optional[Callable[[Dict[str, Any]], Dict[str, Any]]]:
+        """Get the current global context helper."""
+        return cls._context_helper
 
     def __init__(
         self,
@@ -44,6 +81,7 @@ class TchuEvent:
         request_serializer_class: Optional[Type] = None,
         response_serializer_class: Optional[Type] = None,
         handler: Optional[Callable] = None,
+        context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> None:
         """
         Initialize the TchuEvent.
@@ -53,6 +91,7 @@ class TchuEvent:
             request_serializer_class: DRF serializer class for requests
             response_serializer_class: DRF serializer class for responses
             handler: Handler function for this event
+            context_helper: Optional context helper function (overrides class-level helper)
         """
         # Get values from Meta class if not provided as arguments
         meta = getattr(self, "Meta", None)
@@ -77,6 +116,9 @@ class TchuEvent:
         self.handler = handler
         self.validated_data = None
         self.context = None
+        
+        # Instance-level context helper (overrides class-level)
+        self._instance_context_helper = context_helper
 
         # Create serializers
         self._request_serializer = None
@@ -350,14 +392,35 @@ class TchuEvent:
 
     @property
     def request_context(self) -> Optional[Dict[str, Any]]:
-        """Get the request context."""
-        # If we don't have a context but have validated_data with auth fields,
-        # reconstruct a minimal context for DRF serializers
-        if self.context is None and self.validated_data:
-            auth_fields = ["user", "company", "user_company"]
-            if any(field in self.validated_data for field in auth_fields):
-                return self._reconstruct_context_from_data(self.validated_data)
-        return self.context
+        """
+        Get the request context.
+        
+        If context was provided during serialization, returns it directly.
+        Otherwise, attempts to reconstruct context from validated_data using
+        the configured context helper (if available).
+        
+        Returns:
+            Context dictionary or None if no context available
+        """
+        # If we have explicit context, return it
+        if self.context is not None:
+            return self.context
+        
+        # Try to reconstruct from validated_data using helper
+        if self.validated_data:
+            # Use instance-level helper if provided, otherwise use class-level
+            helper = self._instance_context_helper or self._context_helper
+            if helper:
+                try:
+                    return helper(self.validated_data)
+                except Exception as e:
+                    logger.warning(
+                        f"Context helper failed to reconstruct context: {e}. "
+                        f"Returning None. Set a valid context helper with "
+                        f"TchuEvent.set_context_helper() or pass context_helper to __init__."
+                    )
+        
+        return None
 
     def is_authorized(self) -> bool:
         """
@@ -398,69 +461,3 @@ class TchuEvent:
                 f"processed without authorization data and no skip_authorization flag."
             )
 
-    def _reconstruct_context_from_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Reconstruct a minimal context dict from transmitted auth data.
-
-        This creates a mock request-like structure that DRF serializers can use
-        to access user/company information through their default callables.
-
-        The auth data comes from the EventAuthorizationSerializer's hidden fields
-        (user, company, user_company) which were populated during publish.
-
-        Args:
-            data: Dictionary containing user, company, user_company fields
-
-        Returns:
-            Context dictionary with mock request
-        """
-
-        # Create mock objects that match Django model structure
-        class MockUser:
-            def __init__(self, user_data, company_data=None, user_company_data=None):
-                # Handle both dict and int (ID) formats
-                if isinstance(user_data, dict):
-                    self.id = user_data.get("id")
-                    for key, value in user_data.items():
-                        setattr(self, key, value)
-                else:
-                    self.id = user_data
-
-                self.company = MockCompany(company_data) if company_data else None
-                self.user_company = (
-                    MockUserCompany(user_company_data) if user_company_data else None
-                )
-
-        class MockCompany:
-            def __init__(self, company_data):
-                if isinstance(company_data, dict):
-                    self.id = company_data.get("id")
-                    for key, value in company_data.items():
-                        setattr(self, key, value)
-                else:
-                    self.id = company_data
-
-        class MockUserCompany:
-            def __init__(self, user_company_data):
-                if isinstance(user_company_data, dict):
-                    self.id = user_company_data.get("id")
-                    for key, value in user_company_data.items():
-                        setattr(self, key, value)
-                else:
-                    self.id = user_company_data
-
-        class MockRequest:
-            def __init__(self, user):
-                self.user = user
-
-        # Extract auth data from the event data
-        user_data = data.get("user")
-        company_data = data.get("company")
-        user_company_data = data.get("user_company")
-
-        if user_data:
-            mock_user = MockUser(user_data, company_data, user_company_data)
-            mock_request = MockRequest(mock_user)
-            return {"request": mock_request}
-
-        return {}

@@ -297,14 +297,71 @@ def calculate_order_total(data):
 - Requires a result backend (Redis, database, etc.) configured in Celery
 - Use appropriate timeouts to avoid hanging requests
 
-## Django Integration
+## Framework Integration
 
-### Using with TchuEvent
+### Custom Context Reconstruction
+
+`tchu-tchu` is framework-agnostic. To integrate with your framework's auth/context system, provide a context helper:
+
+```python
+from tchu_tchu.events import TchuEvent
+
+# Define your context reconstruction logic
+def my_context_helper(event_data):
+    """
+    Reconstruct request context from event data.
+    
+    Args:
+        event_data: Dict containing fields from your event
+        
+    Returns:
+        Context dict for use with serializers
+    """
+    user = event_data.get('user')
+    if not user:
+        return {}
+    
+    # Reconstruct your framework's request/context object
+    # Example for Django:
+    from types import SimpleNamespace
+    mock_request = SimpleNamespace()
+    mock_request.user = SimpleNamespace(**user)
+    return {'request': mock_request}
+
+# Set globally (affects all events)
+TchuEvent.set_context_helper(my_context_helper)
+
+# Or per-instance
+event = MyEvent(context_helper=my_context_helper)
+```
+
+### Django Integration
 
 ```python
 from tchu_tchu.events import TchuEvent
 from rest_framework import serializers
 
+# 1. Define your Django context helper (once, in your app init)
+def create_django_request_context(event_data):
+    from types import SimpleNamespace
+    
+    user_data = event_data.get("user")
+    if not user_data:
+        return {}
+    
+    mock_user = SimpleNamespace()
+    mock_user.id = user_data.get("id")
+    mock_user.email = user_data.get("email")
+    # ... add other fields ...
+    
+    mock_request = SimpleNamespace()
+    mock_request.user = mock_user
+    return {"request": mock_request}
+
+# Set it globally
+TchuEvent.set_context_helper(create_django_request_context)
+
+# 2. Define your events
 class UserCreatedEvent(TchuEvent):
     topic = "user.created"
     
@@ -313,7 +370,7 @@ class UserCreatedEvent(TchuEvent):
         email = serializers.EmailField()
         name = serializers.CharField()
 
-# Publish
+# 3. Publish
 event = UserCreatedEvent(request_data={
     'user_id': 123,
     'email': 'user@example.com',
@@ -321,12 +378,11 @@ event = UserCreatedEvent(request_data={
 })
 event.publish()
 
-# Subscribe
+# 4. Subscribe
 from tchu_tchu import subscribe
 
 @subscribe('user.created')
 def handle_user_created(event_data):
-    # event_data is validated by the RequestSerializer
     print(f"User {event_data['email']} was created")
 ```
 
@@ -554,6 +610,32 @@ v2.0.0 is significantly faster than v1.x:
 Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
+
+### v2.2.0 (2025-10-26) - Framework Agnostic
+
+**Added:**
+- Injectable context helper system via `TchuEvent.set_context_helper()`
+- Per-instance context helper support
+- `TchuEvent.get_context_helper()` class method
+
+**Changed:**
+- **BREAKING (for framework integrations):** Removed hardcoded Django `_reconstruct_context_from_data()` method
+- `request_context` property now uses configured context helper
+- Framework-specific logic must now be provided via context helper
+
+**Removed:**
+- Hardcoded `MockUser`, `MockCompany`, `MockUserCompany`, `MockRequest` classes
+- Django-specific context reconstruction from core library
+
+**Migration:**
+If you were relying on `request_context`, you now need to set a context helper:
+```python
+def my_context_helper(event_data):
+    # Your framework-specific logic
+    return {'request': reconstructed_request}
+
+TchuEvent.set_context_helper(my_context_helper)
+```
 
 ### v2.1.0 (2025-10-26)
 
