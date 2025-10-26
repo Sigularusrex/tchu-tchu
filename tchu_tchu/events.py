@@ -29,10 +29,10 @@ class TchuEvent:
     - request_serializer_class: DRF serializer for the event request payload
     - response_serializer_class: (optional) DRF serializer for the event response payload (RPC)
     - handler: (optional) function to handle the event when received
-    
+
     For custom context reconstruction (e.g., Django auth, Flask user, etc.):
         TchuEvent.set_context_helper(my_custom_helper)
-    
+
     Or per-instance:
         event = MyEvent(context_helper=my_custom_helper)
     """
@@ -43,33 +43,35 @@ class TchuEvent:
     handler: Optional[Callable] = None
     validated_data: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
-    
+
     # Class-level context helper (can be set globally)
     _context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    
+
     @classmethod
-    def set_context_helper(cls, helper: Callable[[Dict[str, Any]], Dict[str, Any]]) -> None:
+    def set_context_helper(
+        cls, helper: Callable[[Dict[str, Any]], Dict[str, Any]]
+    ) -> None:
         """
         Set a global context helper for reconstructing request context from event data.
-        
+
         This allows framework-specific logic (Django auth, Flask user, etc.) to be
         injected without making tchu-tchu dependent on any specific framework.
-        
+
         Args:
             helper: Function that takes event data dict and returns context dict
-            
+
         Example:
             def django_context_helper(event_data):
                 user = event_data.get('user')
                 company = event_data.get('company')
                 # ... reconstruct Django request mock ...
                 return {'request': mock_request}
-            
+
             TchuEvent.set_context_helper(django_context_helper)
         """
         cls._context_helper = helper
         logger.info(f"Set global context helper: {helper.__name__}")
-    
+
     @classmethod
     def get_context_helper(cls) -> Optional[Callable[[Dict[str, Any]], Dict[str, Any]]]:
         """Get the current global context helper."""
@@ -116,7 +118,7 @@ class TchuEvent:
         self.handler = handler
         self.validated_data = None
         self.context = None
-        
+
         # Instance-level context helper (overrides class-level)
         self._instance_context_helper = context_helper
 
@@ -394,18 +396,18 @@ class TchuEvent:
     def request_context(self) -> Optional[Dict[str, Any]]:
         """
         Get the request context.
-        
+
         If context was provided during serialization, returns it directly.
         Otherwise, attempts to reconstruct context from validated_data using
         the configured context helper (if available).
-        
+
         Returns:
             Context dictionary or None if no context available
         """
         # If we have explicit context, return it
         if self.context is not None:
             return self.context
-        
+
         # Try to reconstruct from validated_data using helper
         if self.validated_data:
             # Use instance-level helper if provided, otherwise use class-level
@@ -419,7 +421,7 @@ class TchuEvent:
                         f"Returning None. Set a valid context helper with "
                         f"TchuEvent.set_context_helper() or pass context_helper to __init__."
                     )
-        
+
         return None
 
     def is_authorized(self) -> bool:
@@ -460,4 +462,3 @@ class TchuEvent:
                 f"Event {self.__class__.__name__} topic '{self.topic}' "
                 f"processed without authorization data and no skip_authorization flag."
             )
-
