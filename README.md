@@ -124,6 +124,15 @@ client.publish('user.created', {
     'email': 'user@example.com',
     'name': 'John Doe'
 })
+
+# RPC call (request-response pattern)
+try:
+    result = client.call('user.validate', {
+        'email': 'user@example.com'
+    }, timeout=5)
+    print(f"Validation result: {result}")
+except TimeoutError:
+    print("No response within timeout")
 ```
 
 ## Multiple Microservices Example
@@ -245,6 +254,48 @@ RabbitMQ topic exchanges support powerful routing patterns:
 - `*.created` - Matches `user.created`, `order.created`, etc.
 - `#` - Matches all events
 - `order.#` - Matches `order.created`, `order.payment.completed`, etc.
+
+## RPC (Request-Response) Pattern
+
+tchu-tchu supports RPC-style calls where you send a message and wait for a response:
+
+```python
+from tchu_tchu import TchuClient, subscribe
+
+# Publisher (any app)
+client = TchuClient()
+
+try:
+    result = client.call('order.calculate_total', {
+        'items': [{'id': 1, 'quantity': 2}],
+        'discount_code': 'SAVE10'
+    }, timeout=10)
+    
+    print(f"Order total: ${result['total']}")
+except TimeoutError:
+    print("No response within 10 seconds")
+except Exception as e:
+    print(f"RPC call failed: {e}")
+
+# Subscriber (handler app)
+@subscribe('order.calculate_total')
+def calculate_order_total(data):
+    items = data['items']
+    total = sum(item['quantity'] * get_price(item['id']) for item in items)
+    
+    # Apply discount if provided
+    if data.get('discount_code'):
+        total = apply_discount(total, data['discount_code'])
+    
+    # Return value will be sent back to caller
+    return {'total': total, 'currency': 'USD'}
+```
+
+**Important Notes:**
+- RPC calls are **point-to-point** (only one worker processes the request)
+- The first handler to respond wins (if multiple handlers exist)
+- Requires a result backend (Redis, database, etc.) configured in Celery
+- Use appropriate timeouts to avoid hanging requests
 
 ## Django Integration
 
@@ -368,8 +419,8 @@ client = TchuClient(celery_app=None, serializer=None)
 ```
 
 Methods:
-- `publish(topic, data, **kwargs)` - Publish an event (broadcast)
-- `call(topic, data, timeout=30, **kwargs)` - RPC call (not yet implemented)
+- `publish(topic, data, **kwargs)` - Publish an event (broadcast to all subscribers)
+- `call(topic, data, timeout=30, **kwargs)` - RPC call (request-response, returns result)
 
 ### subscribe()
 
@@ -504,6 +555,17 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
 
+### v2.1.0 (2025-10-26)
+
+**Added:**
+- RPC (request-response) support via `client.call()`
+- Handlers can return values that are sent back to the caller
+- Comprehensive RPC documentation and examples
+
+**Changed:**
+- Producer now properly handles RPC responses from dispatcher
+- Improved error handling for RPC timeouts and failures
+
 ### v2.0.1 (2025-10-26)
 
 **Fixed:**
@@ -530,7 +592,6 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 **Removed:**
 - Task discovery/inspection logic (no longer needed)
 - `register_remote_task()` (deprecated, kept for compatibility)
-- RPC support (temporarily removed, will be re-added)
 
 **Performance:**
 - 100x faster than v1.x (no inspection overhead)

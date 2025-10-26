@@ -1,11 +1,15 @@
 """Celery producer with broadcast support via topic exchange."""
 
+import time
 import uuid
 from typing import Any, Dict, Union, Optional
 from celery import current_app
 
 from tchu_tchu.serializers.pydantic_serializer import default_serializer
-from tchu_tchu.utils.error_handling import PublishError
+from tchu_tchu.utils.error_handling import (
+    PublishError,
+    TimeoutError as TchuTimeoutError,
+)
 from tchu_tchu.logging.handlers import (
     get_logger,
     log_error,
@@ -86,7 +90,7 @@ class CeleryProducer:
 
             # Send task to dispatcher with routing_key in properties
             # The exchange/queue routing is configured in each app's Celery config
-            result = self.celery_app.send_task(
+            self.celery_app.send_task(
                 self.dispatcher_task_name,
                 args=[serialized_body],
                 kwargs={"routing_key": routing_key},
@@ -122,22 +126,109 @@ class CeleryProducer:
         """
         Send a message and wait for a response (RPC-style).
 
-        Note: RPC pattern is more complex with broadcast exchanges.
-        This will be implemented in a future version.
+        Note: RPC calls use point-to-point routing (not broadcast). The first
+        worker to process the message returns the response.
 
         Args:
-            routing_key: Topic routing key
-            body: Message body
-            content_type: Content type
-            delivery_mode: Delivery mode
-            timeout: Timeout in seconds
-            **kwargs: Additional arguments
+            routing_key: Topic routing key (e.g., 'user.validate')
+            body: Message body (will be serialized)
+            content_type: Content type (for compatibility)
+            delivery_mode: Delivery mode (for compatibility)
+            timeout: Timeout in seconds to wait for response (default: 30)
+            **kwargs: Additional arguments passed to send_task
+
+        Returns:
+            Response from the handler
 
         Raises:
-            NotImplementedError: RPC not yet supported with broadcast pattern
+            PublishError: If publishing fails
+            TimeoutError: If no response received within timeout
         """
-        raise NotImplementedError(
-            "RPC calls are not yet supported with the broadcast pattern. "
-            "Use publish() for fire-and-forget messaging. "
-            "RPC support will be added in a future version."
-        )
+        start_time = time.time()
+
+        try:
+            # Generate unique message ID
+            message_id = str(uuid.uuid4())
+
+            # Serialize the message body
+            if isinstance(body, (str, bytes)):
+                serialized_body = body
+            else:
+                serialized_body = self.serializer.serialize(body)
+
+            # Send task to dispatcher and wait for result
+            # For RPC, we want the result, so we don't use ignore_result
+            result = self.celery_app.send_task(
+                self.dispatcher_task_name,
+                args=[serialized_body],
+                kwargs={"routing_key": routing_key},
+                routing_key=routing_key,
+                task_id=message_id,
+                **kwargs,
+            )
+
+            logger.info(
+                f"RPC call {message_id} sent to routing key '{routing_key}'",
+                extra={"routing_key": routing_key, "message_id": message_id},
+            )
+
+            try:
+                # Wait for result with timeout
+                # The dispatcher returns a dict with handler results
+                response = result.get(timeout=timeout)
+
+                execution_time = time.time() - start_time
+                logger.info(
+                    f"RPC call {message_id} completed in {execution_time:.2f} seconds",
+                    extra={
+                        "routing_key": routing_key,
+                        "message_id": message_id,
+                        "execution_time": execution_time,
+                    },
+                )
+
+                # Extract the actual result from the dispatcher response
+                if isinstance(response, dict):
+                    # Check if there were no handlers
+                    if response.get("status") == "no_handlers":
+                        raise PublishError(
+                            f"No handlers found for routing key '{routing_key}'"
+                        )
+
+                    # Extract results from the first successful handler
+                    results = response.get("results", [])
+                    if results:
+                        first_result = results[0]
+                        if first_result.get("status") == "success":
+                            return first_result.get("result")
+                        else:
+                            # Handler failed
+                            error = first_result.get("error", "Unknown error")
+                            raise PublishError(f"Handler failed: {error}")
+                    else:
+                        raise PublishError("No results returned from handler")
+
+                # If response is not a dict, return it as-is (backward compatibility)
+                return response
+
+            except Exception as e:
+                # Check if it's a timeout
+                if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                    raise TchuTimeoutError(
+                        f"No response received within {timeout} seconds for routing key '{routing_key}'"
+                    )
+                else:
+                    # Re-raise other exceptions
+                    raise PublishError(f"RPC call failed: {e}")
+
+        except (PublishError, TchuTimeoutError):
+            # Re-raise our custom exceptions
+            raise
+        except Exception as e:
+            log_error(
+                logger,
+                f"Failed to execute RPC call to routing key '{routing_key}'",
+                e,
+                routing_key,
+            )
+            raise PublishError(f"Failed to execute RPC call: {e}")

@@ -24,13 +24,10 @@ class TchuEvent:
     """
     Base class for defining microservice events in tchu-tchu.
 
-    This class provides compatibility with your existing TchuEvent pattern
-    while using the new Celery-based infrastructure.
-
     Each event should specify:
     - topic: the routing key/topic string
     - request_serializer_class: DRF serializer for the event request payload
-    - response_serializer_class: (optional) DRF serializer for the event response payload
+    - response_serializer_class: (optional) DRF serializer for the event response payload (RPC)
     - handler: (optional) function to handle the event when received
     """
 
