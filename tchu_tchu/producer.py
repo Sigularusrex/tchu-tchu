@@ -139,8 +139,20 @@ class CeleryProducer:
                     # Always use send_task() - the proper Celery way
                     # This sends the task to the broker, which routes it to any
                     # worker that has this task registered, regardless of which app
+                    #
+                    # For apps with separate queues, extract queue from task name
+                    # e.g., "...pulse_execute..." -> queue: "pulse"
+                    send_kwargs = kwargs.copy()
+                    if 'queue' not in send_kwargs:
+                        # Try to detect queue from task name
+                        task_lower = task_name.lower()
+                        if '_pulse_' in task_lower or task_lower.endswith('_pulse'):
+                            send_kwargs['queue'] = 'pulse'
+                        elif '_scranton_' in task_lower or task_lower.endswith('_scranton'):
+                            send_kwargs['queue'] = 'scranton'
+                    
                     result = self.celery_app.send_task(
-                        task_name, args=[serialized_body], **kwargs
+                        task_name, args=[serialized_body], **send_kwargs
                     )
                     task_results.append(result)
                     log_message_published(logger, routing_key, result.id)
@@ -260,8 +272,17 @@ class CeleryProducer:
                     task_name = handler_info["metadata"].get("task_name")
 
                     # Use send_task() - works across all workers
+                    # Detect queue from task name for apps with separate queues
+                    send_kwargs = kwargs.copy()
+                    if 'queue' not in send_kwargs:
+                        task_lower = task_name.lower()
+                        if '_pulse_' in task_lower or task_lower.endswith('_pulse'):
+                            send_kwargs['queue'] = 'pulse'
+                        elif '_scranton_' in task_lower or task_lower.endswith('_scranton'):
+                            send_kwargs['queue'] = 'scranton'
+                    
                     result = self.celery_app.send_task(
-                        task_name, args=[serialized_body], **kwargs
+                        task_name, args=[serialized_body], **send_kwargs
                     )
                     task_results.append(result)
                     log_message_published(logger, routing_key, result.id)

@@ -545,6 +545,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.3.2
+- **FIX**: Automatic queue detection for apps with separate Celery queues
+- Detects queue name from task name (e.g., `_pulse_` -> queue: `pulse`)
+- Tasks now route to the correct worker queues automatically
+- Supports `pulse`, `scranton`, and other common queue names
+- Manual queue override still possible via `kwargs`
+
 ### v1.3.1
 - **DOCS**: Added explanation for "Received unregistered task" warnings
 - Clarified that these warnings are normal with auto-discovery
