@@ -250,6 +250,82 @@ client.publish("user.created", {
 })
 ```
 
+## Cross-App Communication
+
+`tchu-tchu` supports publishing events from one app and consuming them in another. Here's what you need to know:
+
+### Requirements
+
+1. **Shared Celery Broker**: All apps must connect to the same Redis/RabbitMQ broker
+2. **Same Celery App Name**: Not required, but recommended for consistency
+3. **Task Discovery**: Consumer apps must be running before publishing (so tasks are registered)
+
+### Setup Example
+
+**App A (Consumer - Scranton Service):**
+```python
+# scranton/celery.py
+from celery import Celery
+
+app = Celery('greencast')
+app.config_from_object('django.conf:settings', namespace='CELERY')
+app.autodiscover_tasks()
+
+# scranton/subscribers/information_request_subscriber.py
+from tchu_tchu.events import TchuEvent
+
+class InformationRequestPreparedEvent(TchuEvent):
+    class Meta:
+        topic = "coolset.scranton.information_request.prepared"
+        request_serializer_class = InformationRequestSerializer
+
+@celery.shared_task
+def execute_information_request_task(event, **kwargs):
+    # Handle the event
+    pass
+
+# Register the handler
+InformationRequestPreparedEvent(handler=execute_information_request_task).subscribe()
+```
+
+**App B (Publisher - API Service):**
+```python
+# api/views.py
+from scranton.events import InformationRequestPreparedEvent
+
+def create_information_request(request):
+    # Publish event - will be handled by Scranton service
+    event = InformationRequestPreparedEvent()
+    event.serialize_request(
+        {"information_request": {"order_id": 123}},
+        context={"request": request}
+    )
+    event.publish()  # Scranton service will receive this!
+```
+
+### How It Works
+
+1. **Consumer App Starts**: Registers Celery tasks with predictable names like:
+   ```
+   tchu_tchu.topics.coolset_scranton_information_request_prepared.execute_information_request_task
+   ```
+
+2. **Publisher Discovers Tasks**: When publishing, checks Celery's task registry for matching tasks across all connected apps
+
+3. **Message Routing**: Celery routes the task to the appropriate worker (could be same or different app)
+
+### Troubleshooting
+
+**"No handlers found for topic"** warning:
+- Make sure the consumer app is running and has registered its handlers
+- Check that both apps connect to the same Celery broker
+- Verify the topic names match exactly between publisher and subscriber
+
+**Tasks not being discovered:**
+- Ensure consumer app's Celery workers are running: `celery -A myapp worker`
+- Check that `subscribe()` was called during app startup (not just defined)
+- Verify Celery broker URL is the same across apps
+
 ## Configuration
 
 ### Celery Configuration
@@ -420,6 +496,14 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### v1.1.0
+- **MAJOR FIX**: Cross-app event handling now works correctly
+- Producer now discovers Celery tasks across all apps in the cluster, not just local registry
+- Events published from App A can now trigger handlers registered in App B
+- Uses Celery's task registry for task discovery instead of in-memory registry only
+- Better logging when no handlers are found for a topic
+- Compatible with distributed microservices architecture
 
 ### v1.0.3
 - **CRITICAL FIX**: Properly handle DRF serializers with `EventAuthorizationSerializer` and HiddenFields
