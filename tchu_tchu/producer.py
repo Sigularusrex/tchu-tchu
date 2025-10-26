@@ -140,17 +140,21 @@ class CeleryProducer:
                     # This sends the task to the broker, which routes it to any
                     # worker that has this task registered, regardless of which app
                     #
-                    # For apps with separate queues, extract queue from task name
-                    # e.g., "...pulse_execute..." -> queue: "pulse"
+                    # For apps with separate queues, find which worker has this task
+                    # and route to that worker's queue
                     send_kwargs = kwargs.copy()
-                    if 'queue' not in send_kwargs:
-                        # Try to detect queue from task name
-                        task_lower = task_name.lower()
-                        if '_pulse_' in task_lower or task_lower.endswith('_pulse'):
-                            send_kwargs['queue'] = 'pulse'
-                        elif '_scranton_' in task_lower or task_lower.endswith('_scranton'):
-                            send_kwargs['queue'] = 'scranton'
-                    
+                    if "queue" not in send_kwargs and handler_info["metadata"].get(
+                        "auto_discovered"
+                    ):
+                        # This is an auto-discovered remote task
+                        # Find which queue the worker is consuming from
+                        queue_name = self._find_task_queue(task_name)
+                        if queue_name:
+                            send_kwargs["queue"] = queue_name
+                            logger.debug(
+                                f"Routing task {task_name} to queue: {queue_name}"
+                            )
+
                     result = self.celery_app.send_task(
                         task_name, args=[serialized_body], **send_kwargs
                     )
@@ -272,15 +276,18 @@ class CeleryProducer:
                     task_name = handler_info["metadata"].get("task_name")
 
                     # Use send_task() - works across all workers
-                    # Detect queue from task name for apps with separate queues
+                    # For auto-discovered tasks, find the correct queue
                     send_kwargs = kwargs.copy()
-                    if 'queue' not in send_kwargs:
-                        task_lower = task_name.lower()
-                        if '_pulse_' in task_lower or task_lower.endswith('_pulse'):
-                            send_kwargs['queue'] = 'pulse'
-                        elif '_scranton_' in task_lower or task_lower.endswith('_scranton'):
-                            send_kwargs['queue'] = 'scranton'
-                    
+                    if "queue" not in send_kwargs and handler_info["metadata"].get(
+                        "auto_discovered"
+                    ):
+                        queue_name = self._find_task_queue(task_name)
+                        if queue_name:
+                            send_kwargs["queue"] = queue_name
+                            logger.debug(
+                                f"Routing RPC task {task_name} to queue: {queue_name}"
+                            )
+
                     result = self.celery_app.send_task(
                         task_name, args=[serialized_body], **send_kwargs
                     )
@@ -333,6 +340,45 @@ class CeleryProducer:
                 routing_key,
             )
             raise PublishError(f"Failed to execute RPC call: {e}")
+
+    def _find_task_queue(self, task_name: str) -> Optional[str]:
+        """
+        Find which queue a task is registered on by inspecting active workers.
+
+        Args:
+            task_name: Full task name to find
+
+        Returns:
+            Queue name if found, None otherwise
+        """
+        try:
+            inspect = self.celery_app.control.inspect(timeout=0.5)
+
+            # Get active queues for each worker
+            active_queues = inspect.active_queues()
+
+            # Get registered tasks for each worker
+            registered = inspect.registered()
+
+            if not active_queues or not registered:
+                return None
+
+            # Find which worker has this task
+            for worker_name, tasks in registered.items():
+                if task_name in tasks:
+                    # Found the worker! Now get its queue(s)
+                    worker_queues = active_queues.get(worker_name, [])
+                    if worker_queues:
+                        # Return the first queue (usually the main one)
+                        # Queue info is dict with 'name', 'exchange', 'routing_key'
+                        queue_name = worker_queues[0].get("name")
+                        return queue_name
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Failed to find queue for task {task_name}: {e}")
+            return None
 
     def get_topic_info(self, routing_key: str) -> Dict[str, Any]:
         """

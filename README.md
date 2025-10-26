@@ -545,12 +545,16 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### v1.4.0
+- **PROPER QUEUE ROUTING**: Generic queue detection via Celery inspect API
+- Finds which queue a task is registered on by inspecting active workers
+- No hardcoded app names - works with ANY queue configuration
+- 0.5-second timeout to avoid blocking
+- Falls back to default routing if inspection fails
+- Library-agnostic solution - works for all users!
+
 ### v1.3.2
-- **FIX**: Automatic queue detection for apps with separate Celery queues
-- Detects queue name from task name (e.g., `_pulse_` -> queue: `pulse`)
-- Tasks now route to the correct worker queues automatically
-- Supports `pulse`, `scranton`, and other common queue names
-- Manual queue override still possible via `kwargs`
+- ~~Hardcoded queue detection~~ (removed - bad design)
 
 ### v1.3.1
 - **DOCS**: Added explanation for "Received unregistered task" warnings
