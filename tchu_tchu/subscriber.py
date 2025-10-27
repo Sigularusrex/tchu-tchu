@@ -202,33 +202,3 @@ def create_topic_dispatcher(
             raise
 
     return dispatch_event
-
-
-def register_remote_task(
-    routing_key: str,
-    task_name: str,
-    *,
-    name: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> None:
-    """
-    Register a remote task proxy for cross-app communication.
-
-    Note: With the new broadcast architecture, this is no longer needed!
-    Events are automatically broadcast to all apps that have queues bound
-    to the topic exchange with matching routing keys.
-
-    This function is kept for backward compatibility but does nothing.
-
-    Args:
-        routing_key: Topic routing key
-        task_name: Full task name (ignored)
-        name: Optional handler name (ignored)
-        metadata: Optional metadata (ignored)
-    """
-    logger.warning(
-        "register_remote_task() is deprecated with the broadcast architecture. "
-        "Remote tasks are automatically discovered via queue bindings. "
-        "This call has no effect."
-    )
-    pass

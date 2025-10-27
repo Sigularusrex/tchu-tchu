@@ -696,6 +696,12 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
 
+### v2.2.2 (2025-10-27)
+
+**Fixed:**
+- `UnboundLocalError` when using `JSONField` in DRF serializers
+- Removed redundant local `Dict` import that shadowed module-level import
+
 ### v2.2.0 (2025-10-26) - Framework Agnostic
 
 **Added:**

@@ -164,9 +164,7 @@ def _convert_drf_field_to_pydantic(field_instance: Any) -> tuple:
             field_type = List[Any]
 
     elif isinstance(field_instance, drf_serializers.DictField):
-        from typing import Dict
-
-        # Use Any from module-level imports
+        # Use Dict and Any from module-level imports
         field_type = Dict[str, Any]
 
     elif isinstance(field_instance, drf_serializers.DecimalField):
