@@ -163,10 +163,21 @@ class TchuEvent:
                         skip_reason="Authorization was skipped in original event",
                     )
                 else:
-                    # Standard processing with context
-                    # Note: You'll need to implement create_request_context_from_event
-                    # or adapt this to your context creation logic
-                    event_instance.serialize_request(data)
+                    # Reconstruct context from event data using context helper
+                    context = None
+                    helper = (
+                        event_instance._instance_context_helper or self._context_helper
+                    )
+                    if helper:
+                        try:
+                            context = helper(data)
+                        except Exception as ctx_err:
+                            logger.warning(
+                                f"Context helper failed: {ctx_err}. Processing without context."
+                            )
+
+                    # Serialize with reconstructed context
+                    event_instance.serialize_request(data, context=context)
 
                 # Call the original handler
                 return self.handler(event_instance)
