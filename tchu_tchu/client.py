@@ -16,17 +16,14 @@ class TchuClient:
     to ensure seamless integration with your existing TchuEvent system.
     """
 
-    def __init__(
-        self, celery_app: Optional[Any] = None, serializer: Optional[Any] = None
-    ) -> None:
+    def __init__(self, celery_app: Optional[Any] = None) -> None:
         """
         Initialize the TchuClient.
 
         Args:
             celery_app: Optional Celery app instance
-            serializer: Optional custom serializer
         """
-        self.producer = CeleryProducer(celery_app=celery_app, serializer=serializer)
+        self.producer = CeleryProducer(celery_app=celery_app)
 
     def publish(self, topic: str, data: Union[Dict[str, Any], Any], **kwargs) -> None:
         """
