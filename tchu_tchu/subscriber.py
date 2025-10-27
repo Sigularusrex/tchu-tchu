@@ -202,3 +202,50 @@ def create_topic_dispatcher(
             raise
 
     return dispatch_event
+
+
+def get_subscribed_routing_keys(
+    exclude_patterns: Optional[list[str]] = None,
+) -> list[str]:
+    """
+    Get all routing keys that have handlers registered.
+
+    This includes routing keys from both @subscribe decorators and Event().subscribe() calls.
+    Useful for auto-configuring Celery queue bindings.
+
+    Args:
+        exclude_patterns: Optional list of patterns to exclude (e.g., ['rpc.*'])
+
+    Returns:
+        List of routing keys with registered handlers
+
+    Example:
+        # Get all routing keys except RPC
+        keys = get_subscribed_routing_keys(exclude_patterns=['rpc.*'])
+        # Returns: ['user.created', 'order.updated', 'coolset.scranton.*', ...]
+    """
+    import fnmatch
+
+    registry = get_registry()
+    all_keys = registry.get_all_routing_keys_and_patterns()
+
+    if not exclude_patterns:
+        return all_keys
+
+    # Filter out excluded patterns
+    filtered_keys = []
+    for key in all_keys:
+        should_exclude = False
+        for pattern in exclude_patterns:
+            # Convert RabbitMQ pattern to fnmatch pattern
+            fnmatch_pattern = (
+                pattern.replace(".", r"\.").replace("*", ".*").replace("#", ".*")
+            )
+            if fnmatch.fnmatch(key, fnmatch_pattern):
+                should_exclude = True
+                break
+
+        if not should_exclude:
+            filtered_keys.append(key)
+
+    return filtered_keys

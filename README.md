@@ -59,24 +59,23 @@ pip install tchu-tchu
 
 ### 1. Configure Celery (Each Microservice)
 
-Each microservice needs to configure its Celery app to consume from a queue bound to the `tchu_events` exchange:
+Each microservice needs to configure its Celery app to consume from a queue bound to the `tchu_events` exchange.
+
+**tchu-tchu v2.2.3+ supports auto-configuration** - it automatically collects routing keys from all your `@subscribe` decorators and `Event().subscribe()` calls!
 
 ```python
 # myapp/celery.py
 from celery import Celery
-from kombu import Exchange, Queue
-from tchu_tchu import create_topic_dispatcher
+from kombu import Exchange, Queue, binding
+from tchu_tchu import create_topic_dispatcher, get_subscribed_routing_keys
 from tchu_tchu.events import TchuEvent
 
 app = Celery('myapp')
 
 # ===== Configure context helper (for framework integration) =====
-# This is optional but recommended if you're using TchuEvent with request_context
-# Define your context reconstruction logic once here:
+# Optional but recommended if you're using TchuEvent with request_context
 def my_context_helper(event_data):
     """Reconstruct request context from event data."""
-    # Your framework-specific logic (Django, Flask, etc.)
-    # See "Framework Integration" section for examples
     from types import SimpleNamespace
     user = event_data.get('user')
     if user:
@@ -85,30 +84,52 @@ def my_context_helper(event_data):
         return {'request': mock_request}
     return {}
 
-# Set it globally for all events
 TchuEvent.set_context_helper(my_context_helper)
 
-# ===== Configure Celery queues and exchange =====
-# Define the topic exchange
+# ===== Import subscribers FIRST so @subscribe decorators run =====
+app.autodiscover_tasks(['myapp.subscribers'])
+
+# ===== Auto-configure queue bindings from subscribed routing keys =====
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
-# Each app has its own unique queue bound to the exchange
+# Get all routing keys from @subscribe and Event().subscribe() calls
+# Exclude RPC patterns - those go to a separate queue
+broadcast_keys = get_subscribed_routing_keys(exclude_patterns=['rpc.*'])
+
+# Build bindings automatically
+broadcast_bindings = [
+    binding(tchu_exchange, routing_key=key) 
+    for key in broadcast_keys
+]
+
+# Configure queues
 app.conf.task_queues = (
+    # Main queue - auto-configured from your handlers!
     Queue(
-        'myapp_queue',                  # Unique queue name for this app
+        'myapp_queue',
         exchange=tchu_exchange,
-        routing_key='user.*',           # Subscribe to user.* events
+        bindings=broadcast_bindings,  # ✅ Auto-generated!
         durable=True,
-        auto_delete=False,
+    ),
+    # RPC queue - for RPC calls to THIS service only
+    Queue(
+        'myapp_rpc_queue',
+        exchange=tchu_exchange,
+        routing_key='rpc.myapp.*',
+        durable=True,
+        priority=10,  # Higher priority for RPC
     ),
 )
 
-# Route the dispatcher task to your app's queue
+# Route dispatcher to both queues
 app.conf.task_routes = {
-    'tchu_tchu.dispatch_event': {'queue': 'myapp_queue'},
+    'tchu_tchu.dispatch_event': [
+        {'queue': 'myapp_queue'},
+        {'queue': 'myapp_rpc_queue'},
+    ],
 }
 
-# Create the dispatcher task (handles incoming events)
+# Create the dispatcher task
 dispatcher = create_topic_dispatcher(app)
 ```
 
@@ -693,10 +714,23 @@ v2.0.0 is significantly faster than v1.x:
 Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
+
 ### v2.2.3 (2025-10-27)
 
-**Fixed:**
-- Fully removed register_remote_task
+**Added:**
+- `get_subscribed_routing_keys()` - Auto-collect routing keys from all `@subscribe` and `Event().subscribe()` calls
+- Auto-configuration support for Celery queue bindings
+- `exclude_patterns` parameter to filter out routing keys (e.g., exclude RPC patterns)
+- `get_all_routing_keys_and_patterns()` method in `TopicRegistry`
+
+**Changed:**
+- Updated Quick Start documentation with auto-configuration example
+- Recommended two-queue setup: main (auto-configured) + RPC (manual)
+- RPC queue can have higher priority for faster response times
+
+**Improved:**
+- Queue configuration now auto-updates when you add/remove handlers
+- No need to manually maintain routing key lists in celery.py
 
 ### v2.2.2 (2025-10-27)
 

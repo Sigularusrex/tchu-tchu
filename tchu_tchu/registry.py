@@ -157,6 +157,17 @@ class TopicRegistry:
         with self._lock:
             return list(self._pattern_handlers.keys())
 
+    def get_all_routing_keys_and_patterns(self) -> List[str]:
+        """
+        Get all registered routing keys and patterns (combined).
+
+        Returns:
+            List of all routing keys and patterns that have handlers registered
+        """
+        with self._lock:
+            all_keys = list(self._handlers.keys()) + list(self._pattern_handlers.keys())
+            return list(set(all_keys))  # Remove duplicates
+
     def get_handler_count(self, routing_key: Optional[str] = None) -> int:
         """
         Get count of handlers.
