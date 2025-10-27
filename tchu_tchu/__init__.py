@@ -10,7 +10,7 @@ v2.0.0: Complete redesign using RabbitMQ topic exchanges for true broadcast mess
 
 from tchu_tchu.client import TchuClient
 from tchu_tchu.producer import CeleryProducer
-from tchu_tchu.subscriber import subscribe, create_topic_dispatcher, register_remote_task
+from tchu_tchu.subscriber import subscribe, create_topic_dispatcher
 from tchu_tchu.events import TchuEvent
 from tchu_tchu.version import __version__
 
@@ -19,7 +19,6 @@ __all__ = [
     "CeleryProducer",
     "subscribe",
     "create_topic_dispatcher",
-    "register_remote_task",  # Deprecated, kept for compatibility
     "TchuEvent",
     "__version__",
 ]

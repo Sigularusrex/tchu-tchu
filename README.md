@@ -627,8 +627,6 @@ from tchu_tchu import subscribe, register_remote_task
 def handle_user_created(event):
     pass
 
-# In remote app
-register_remote_task('user.created', 'app.tasks.handle_user_created')
 ```
 
 **After (v2.0.0):**
@@ -695,6 +693,10 @@ v2.0.0 is significantly faster than v1.x:
 Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
+### v2.2.3 (2025-10-27)
+
+**Fixed:**
+- Fully removed register_remote_task
 
 ### v2.2.2 (2025-10-27)
 
