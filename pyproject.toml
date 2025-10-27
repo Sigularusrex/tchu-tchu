@@ -72,7 +72,7 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=tchu_tchu --cov-report=term-missing"
+addopts = "-ra -q"
 testpaths = [
     "tests",
 ]

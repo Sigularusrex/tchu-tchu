@@ -1,23 +1,18 @@
 """Base TchuEvent class for tchu-tchu integration."""
 
-from typing import Optional, Type, Callable, Dict, Any, Union
-from abc import ABC, abstractmethod
+import importlib.util
+from typing import Optional, Type, Callable, Dict, Any
 
 from tchu_tchu.client import TchuClient
 from tchu_tchu.registry import get_registry
-from tchu_tchu.serializers.pydantic_serializer import PydanticSerializer
-from tchu_tchu.serializers.drf_to_pydantic import convert_drf_to_pydantic
+from tchu_tchu.utils.json_encoder import loads_message
 from tchu_tchu.utils.error_handling import SerializationError
 from tchu_tchu.logging.handlers import get_logger
 
 logger = get_logger(__name__)
 
-try:
-    from rest_framework import serializers as drf_serializers
-
-    DRF_AVAILABLE = True
-except ImportError:
-    DRF_AVAILABLE = False
+# Check if Django REST Framework is available
+DRF_AVAILABLE = importlib.util.find_spec("rest_framework") is not None
 
 
 class TchuEvent:
@@ -122,40 +117,8 @@ class TchuEvent:
         # Instance-level context helper (overrides class-level)
         self._instance_context_helper = context_helper
 
-        # Create serializers
-        self._request_serializer = None
-        self._response_serializer = None
+        # Store reference to client
         self._client = None
-
-        if self.request_serializer_class and DRF_AVAILABLE:
-            try:
-                # Convert DRF serializer to Pydantic model
-                pydantic_model = convert_drf_to_pydantic(
-                    self.request_serializer_class,
-                    f"{self.__class__.__name__}RequestModel",
-                )
-                self._request_serializer = PydanticSerializer(pydantic_model)
-            except Exception as e:
-                logger.warning(f"Failed to convert request serializer to Pydantic: {e}")
-                self._request_serializer = PydanticSerializer()
-        else:
-            self._request_serializer = PydanticSerializer()
-
-        if self.response_serializer_class and DRF_AVAILABLE:
-            try:
-                # Convert DRF serializer to Pydantic model
-                pydantic_model = convert_drf_to_pydantic(
-                    self.response_serializer_class,
-                    f"{self.__class__.__name__}ResponseModel",
-                )
-                self._response_serializer = PydanticSerializer(pydantic_model)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to convert response serializer to Pydantic: {e}"
-                )
-                self._response_serializer = PydanticSerializer()
-        else:
-            self._response_serializer = PydanticSerializer()
 
     @property
     def client(self) -> TchuClient:
@@ -249,14 +212,15 @@ class TchuEvent:
             Validated data dictionary
         """
         try:
-            # If we have a DRF serializer and context, use the DRF serializer
-            # to properly handle HiddenFields with defaults that need context
-            if self.request_serializer_class and DRF_AVAILABLE and context:
+            # If we have a DRF serializer, use it for validation
+            if self.request_serializer_class and DRF_AVAILABLE:
                 # Use the original DRF serializer with context
                 serializer_kwargs = {
                     "data": data,
-                    "context": context,
                 }
+
+                if context:
+                    serializer_kwargs["context"] = context
 
                 # Pass skip parameters if the serializer supports them
                 if skip_authorization:
@@ -274,24 +238,13 @@ class TchuEvent:
                 # This includes the hidden auth fields populated by defaults
                 self.validated_data = dict(drf_serializer.validated_data)
 
-            elif self._request_serializer:
-                # Use Pydantic serializer (for events without DRF or context)
-                if isinstance(data, str):
-                    validated_data = self._request_serializer.deserialize(data)
-                else:
-                    # Serialize then deserialize to validate
-                    serialized = self._request_serializer.serialize(data)
-                    validated_data = self._request_serializer.deserialize(serialized)
-
-                if hasattr(validated_data, "dict"):
-                    # Pydantic model
-                    self.validated_data = validated_data.dict()
-                else:
-                    # Dictionary
-                    self.validated_data = validated_data
             else:
                 # No serializer, use data as-is
-                self.validated_data = data
+                # Handle both dict and JSON string input
+                if isinstance(data, str):
+                    self.validated_data = loads_message(data)
+                else:
+                    self.validated_data = data
 
             self.context = context
 
@@ -317,21 +270,35 @@ class TchuEvent:
         Returns:
             Validated response data
         """
-        if not self._response_serializer:
-            raise NotImplementedError("No response serializer defined for this event")
+        if not self.response_serializer_class:
+            # If no response serializer, just return data as-is
+            return data
 
         try:
-            if isinstance(data, str):
-                validated_data = self._response_serializer.deserialize(data)
-            else:
-                # Serialize then deserialize to validate
-                serialized = self._response_serializer.serialize(data)
-                validated_data = self._response_serializer.deserialize(serialized)
+            # If we have a DRF serializer, use it for validation
+            if self.response_serializer_class and DRF_AVAILABLE:
+                serializer_kwargs = {
+                    "data": data,
+                }
 
-            if hasattr(validated_data, "dict"):
-                return validated_data.dict()
+                if context:
+                    serializer_kwargs["context"] = context
+
+                drf_serializer = self.response_serializer_class(**serializer_kwargs)
+
+                if not drf_serializer.is_valid():
+                    raise SerializationError(
+                        f"DRF serializer validation failed: {drf_serializer.errors}"
+                    )
+
+                return dict(drf_serializer.validated_data)
+
             else:
-                return validated_data
+                # No serializer, handle both dict and JSON string input
+                if isinstance(data, str):
+                    return loads_message(data)
+                else:
+                    return data
 
         except Exception as e:
             logger.error(f"Response serialization failed: {e}", exc_info=True)

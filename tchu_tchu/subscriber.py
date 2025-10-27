@@ -5,7 +5,7 @@ from typing import Callable, Optional, Any, Dict
 from functools import wraps
 
 from tchu_tchu.registry import get_registry
-from tchu_tchu.serializers.pydantic_serializer import default_serializer
+from tchu_tchu.utils.json_encoder import loads_message
 from tchu_tchu.logging.handlers import (
     get_logger,
     log_message_received,
@@ -75,7 +75,6 @@ def subscribe(
 def create_topic_dispatcher(
     celery_app: Any,
     task_name: str = "tchu_tchu.dispatch_event",
-    serializer: Optional[Any] = None,
 ) -> Callable:
     """
     Create a Celery task that dispatches messages to local handlers.
@@ -106,7 +105,6 @@ def create_topic_dispatcher(
     Args:
         celery_app: Celery app instance
         task_name: Name for the dispatcher task (default: 'tchu_tchu.dispatch_event')
-        serializer: Optional custom serializer
 
     Returns:
         Celery task function that dispatches to local handlers
@@ -117,7 +115,6 @@ def create_topic_dispatcher(
 
         dispatcher = create_topic_dispatcher(app)
     """
-    _serializer = serializer or default_serializer
     registry = get_registry()
 
     @celery_app.task(name=task_name, bind=True)
@@ -140,9 +137,9 @@ def create_topic_dispatcher(
             # Deserialize message
             if isinstance(message_body, str):
                 try:
-                    deserialized = _serializer.deserialize(message_body)
+                    deserialized = loads_message(message_body)
                 except Exception:
-                    # If deserialization fails, try JSON
+                    # If deserialization fails, try standard JSON
                     deserialized = json.loads(message_body)
             else:
                 deserialized = message_body

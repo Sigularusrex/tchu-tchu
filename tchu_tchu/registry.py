@@ -187,7 +187,18 @@ class TopicRegistry:
                 )
                 return total
             else:
-                return len(self.get_handlers(routing_key))
+                # Count handlers for specific routing key
+                count = 0
+
+                # Add exact match handlers
+                count += len(self._handlers.get(routing_key, []))
+
+                # Add pattern match handlers
+                for pattern, pattern_handlers in self._pattern_handlers.items():
+                    if self._matches_pattern(routing_key, pattern):
+                        count += len(pattern_handlers)
+
+                return count
 
     def clear(self) -> None:
         """Clear all registered handlers."""

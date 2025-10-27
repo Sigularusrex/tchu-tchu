@@ -1,6 +1,5 @@
 """Serialization utilities for tchu-tchu."""
 
-from tchu_tchu.serializers.pydantic_serializer import PydanticSerializer
-from tchu_tchu.serializers.drf_to_pydantic import convert_drf_to_pydantic
+from tchu_tchu.utils.json_encoder import dumps_message, loads_message
 
-__all__ = ["PydanticSerializer", "convert_drf_to_pydantic"]
+__all__ = ["dumps_message", "loads_message"]

@@ -1,66 +1,122 @@
-"""Tests for serializers."""
+"""Tests for JSON encoder utilities."""
 
 import pytest
 import json
-from datetime import datetime, date
+from datetime import datetime, date, time
 from decimal import Decimal
 from uuid import UUID, uuid4
-from pydantic import BaseModel, ValidationError
 
-from tchu_tchu.serializers.pydantic_serializer import PydanticSerializer
-from tchu_tchu.utils.error_handling import SerializationError
-
-
-class TestModel(BaseModel):
-    """Test Pydantic model."""
-
-    name: str
-    age: int
-    email: str
+from tchu_tchu.utils.json_encoder import (
+    MessageJSONEncoder,
+    dumps_message,
+    loads_message,
+)
 
 
-class TestPydanticSerializer:
-    """Test cases for PydanticSerializer."""
+class TestMessageJSONEncoder:
+    """Test cases for MessageJSONEncoder."""
 
-    def test_serialize_dict(self):
-        """Test serializing a dictionary."""
-        serializer = PydanticSerializer()
+    def test_encode_uuid(self):
+        """Test encoding UUID objects."""
+        test_uuid = uuid4()
+        result = json.dumps({"id": test_uuid}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["id"] == str(test_uuid)
+
+    def test_encode_datetime(self):
+        """Test encoding datetime objects."""
+        test_datetime = datetime(2023, 1, 15, 12, 30, 45)
+        result = json.dumps({"timestamp": test_datetime}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["timestamp"] == test_datetime.isoformat()
+
+    def test_encode_date(self):
+        """Test encoding date objects."""
+        test_date = date(2023, 1, 15)
+        result = json.dumps({"date": test_date}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["date"] == test_date.isoformat()
+
+    def test_encode_time(self):
+        """Test encoding time objects."""
+        test_time = time(12, 30, 45)
+        result = json.dumps({"time": test_time}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["time"] == test_time.isoformat()
+
+    def test_encode_decimal(self):
+        """Test encoding Decimal objects."""
+        test_decimal = Decimal("10.50")
+        result = json.dumps({"amount": test_decimal}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["amount"] == 10.5
+
+    def test_encode_set(self):
+        """Test encoding set objects."""
+        test_set = {1, 2, 3}
+        result = json.dumps({"items": test_set}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert set(parsed["items"]) == test_set
+
+    def test_encode_bytes_utf8(self):
+        """Test encoding UTF-8 bytes."""
+        test_bytes = b"hello"
+        result = json.dumps({"data": test_bytes}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        assert parsed["data"] == "hello"
+
+    def test_encode_bytes_non_utf8(self):
+        """Test encoding non-UTF-8 bytes (base64)."""
+        test_bytes = b"\x80\x81\x82\x83"
+        result = json.dumps({"data": test_bytes}, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+        # Should be base64 encoded
+        import base64
+
+        assert parsed["data"] == base64.b64encode(test_bytes).decode("ascii")
+
+    def test_encode_complex_nested_structure(self):
+        """Test encoding complex nested data structures."""
+        test_uuid = uuid4()
+        test_datetime = datetime.now()
+        test_decimal = Decimal("123.45")
+
+        data = {
+            "id": test_uuid,
+            "timestamp": test_datetime,
+            "amount": test_decimal,
+            "tags": {"python", "django", "celery"},
+            "metadata": {
+                "created": test_datetime,
+                "items": [1, 2, 3],
+            },
+        }
+
+        result = json.dumps(data, cls=MessageJSONEncoder)
+        parsed = json.loads(result)
+
+        assert parsed["id"] == str(test_uuid)
+        assert parsed["timestamp"] == test_datetime.isoformat()
+        assert parsed["amount"] == float(test_decimal)
+        assert set(parsed["tags"]) == {"python", "django", "celery"}
+        assert parsed["metadata"]["created"] == test_datetime.isoformat()
+
+
+class TestDumpsLoadsMessage:
+    """Test cases for dumps_message and loads_message functions."""
+
+    def test_dumps_simple_dict(self):
+        """Test dumping a simple dictionary."""
         data = {"name": "John", "age": 30}
-
-        result = serializer.serialize(data)
-
-        assert isinstance(result, str)
-        parsed = json.loads(result)
-        assert parsed["name"] == "John"
-        assert parsed["age"] == 30
-
-    def test_serialize_pydantic_model(self):
-        """Test serializing a Pydantic model."""
-        serializer = PydanticSerializer()
-        model = TestModel(name="John", age=30, email="john@example.com")
-
-        result = serializer.serialize(model)
+        result = dumps_message(data)
 
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed["name"] == "John"
         assert parsed["age"] == 30
-        assert parsed["email"] == "john@example.com"
 
-    def test_serialize_with_model_class(self):
-        """Test serializing with a specific model class."""
-        serializer = PydanticSerializer(TestModel)
-        data = {"name": "John", "age": 30, "email": "john@example.com"}
-
-        result = serializer.serialize(data)
-
-        assert isinstance(result, str)
-        parsed = json.loads(result)
-        assert parsed["name"] == "John"
-
-    def test_serialize_special_types(self):
-        """Test serializing special Python types."""
-        serializer = PydanticSerializer()
+    def test_dumps_with_special_types(self):
+        """Test dumping data with special types."""
         test_uuid = uuid4()
         test_date = date.today()
         test_datetime = datetime.now()
@@ -75,7 +131,7 @@ class TestPydanticSerializer:
             "bytes": b"hello",
         }
 
-        result = serializer.serialize(data)
+        result = dumps_message(data)
         parsed = json.loads(result)
 
         assert parsed["uuid"] == str(test_uuid)
@@ -85,60 +141,37 @@ class TestPydanticSerializer:
         assert set(parsed["set"]) == {1, 2, 3}
         assert parsed["bytes"] == "hello"
 
-    def test_deserialize_string(self):
-        """Test deserializing a JSON string."""
-        serializer = PydanticSerializer()
+    def test_loads_simple_json(self):
+        """Test loading a simple JSON string."""
         json_str = '{"name": "John", "age": 30}'
-
-        result = serializer.deserialize(json_str)
-
-        assert isinstance(result, dict)
-        assert result["name"] == "John"
-        assert result["age"] == 30
-
-    def test_deserialize_bytes(self):
-        """Test deserializing bytes."""
-        serializer = PydanticSerializer()
-        json_bytes = b'{"name": "John", "age": 30}'
-
-        result = serializer.deserialize(json_bytes)
+        result = loads_message(json_str)
 
         assert isinstance(result, dict)
         assert result["name"] == "John"
         assert result["age"] == 30
 
-    def test_deserialize_with_model_class(self):
-        """Test deserializing with model validation."""
-        serializer = PydanticSerializer(TestModel)
-        json_str = '{"name": "John", "age": 30, "email": "john@example.com"}'
+    def test_roundtrip(self):
+        """Test serialization and deserialization roundtrip."""
+        original_data = {
+            "id": str(uuid4()),
+            "name": "Test User",
+            "age": 25,
+            "tags": ["python", "django"],
+            "metadata": {
+                "created": datetime.now().isoformat(),
+                "active": True,
+            },
+        }
 
-        result = serializer.deserialize(json_str)
+        # Serialize and deserialize
+        serialized = dumps_message(original_data)
+        deserialized = loads_message(serialized)
 
-        assert isinstance(result, TestModel)
-        assert result.name == "John"
-        assert result.age == 30
-        assert result.email == "john@example.com"
+        assert deserialized == original_data
 
-    def test_serialize_invalid_data_with_model(self):
-        """Test serialization error with invalid data."""
-        serializer = PydanticSerializer(TestModel)
-        invalid_data = {"name": "John"}  # Missing required fields
-
-        with pytest.raises(SerializationError):
-            serializer.serialize(invalid_data)
-
-    def test_deserialize_invalid_json(self):
-        """Test deserialization error with invalid JSON."""
-        serializer = PydanticSerializer()
+    def test_loads_invalid_json(self):
+        """Test loading invalid JSON raises error."""
         invalid_json = '{"name": "John", "age":}'
 
-        with pytest.raises(SerializationError):
-            serializer.deserialize(invalid_json)
-
-    def test_deserialize_invalid_data_with_model(self):
-        """Test deserialization error with model validation."""
-        serializer = PydanticSerializer(TestModel)
-        json_str = '{"name": "John", "age": "not_a_number", "email": "invalid_email"}'
-
-        with pytest.raises(SerializationError):
-            serializer.deserialize(json_str)
+        with pytest.raises(json.JSONDecodeError):
+            loads_message(invalid_json)

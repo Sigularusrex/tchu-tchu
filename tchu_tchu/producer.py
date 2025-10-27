@@ -5,7 +5,7 @@ import uuid
 from typing import Any, Dict, Union, Optional
 from celery import current_app
 
-from tchu_tchu.serializers.pydantic_serializer import default_serializer
+from tchu_tchu.utils.json_encoder import dumps_message
 from tchu_tchu.utils.error_handling import (
     PublishError,
     TimeoutError as TchuTimeoutError,
@@ -35,7 +35,6 @@ class CeleryProducer:
     def __init__(
         self,
         celery_app: Optional[Any] = None,
-        serializer: Optional[Any] = None,
         dispatcher_task_name: str = "tchu_tchu.dispatch_event",
     ) -> None:
         """
@@ -43,11 +42,9 @@ class CeleryProducer:
 
         Args:
             celery_app: Optional Celery app instance (uses current_app if None)
-            serializer: Optional custom serializer (uses default Pydantic serializer if None)
             dispatcher_task_name: Name of the dispatcher task (default: 'tchu_tchu.dispatch_event')
         """
         self.celery_app = celery_app or current_app
-        self.serializer = serializer or default_serializer
         self.dispatcher_task_name = dispatcher_task_name
 
     def publish(
@@ -86,7 +83,7 @@ class CeleryProducer:
             if isinstance(body, (str, bytes)):
                 serialized_body = body
             else:
-                serialized_body = self.serializer.serialize(body)
+                serialized_body = dumps_message(body)
 
             # Send task to dispatcher with routing_key in properties
             # The exchange/queue routing is configured in each app's Celery config
@@ -154,7 +151,7 @@ class CeleryProducer:
             if isinstance(body, (str, bytes)):
                 serialized_body = body
             else:
-                serialized_body = self.serializer.serialize(body)
+                serialized_body = dumps_message(body)
 
             # Send task to dispatcher and wait for result
             # For RPC, we want the result, so we don't use ignore_result

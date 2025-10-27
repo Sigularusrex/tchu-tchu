@@ -26,7 +26,7 @@ class TestTopicRegistry:
         handlers = self.registry.get_handlers("test.topic")
         assert len(handlers) == 1
         assert handlers[0]["function"] == handler
-        assert handlers[0]["topic"] == "test.topic"
+        assert handlers[0]["routing_key"] == "test.topic"
 
     def test_register_multiple_handlers_same_topic(self):
         """Test registering multiple handlers for the same topic."""
@@ -112,17 +112,17 @@ class TestTopicRegistry:
         success = self.registry.unregister_handler("nonexistent_id")
         assert success is False
 
-    def test_get_all_topics(self):
-        """Test getting all registered topics."""
+    def test_get_all_routing_keys(self):
+        """Test getting all registered routing keys."""
         handler1 = Mock()
         handler2 = Mock()
 
         self.registry.register_handler("topic1", handler1)
         self.registry.register_handler("topic2", handler2)
 
-        topics = self.registry.get_all_topics()
-        assert "topic1" in topics
-        assert "topic2" in topics
+        routing_keys = self.registry.get_all_routing_keys()
+        assert "topic1" in routing_keys
+        assert "topic2" in routing_keys
 
     def test_get_all_patterns(self):
         """Test getting all registered patterns."""
@@ -167,7 +167,7 @@ class TestTopicRegistry:
         self.registry.clear()
 
         assert self.registry.get_handler_count() == 0
-        assert len(self.registry.get_all_topics()) == 0
+        assert len(self.registry.get_all_routing_keys()) == 0
         assert len(self.registry.get_all_patterns()) == 0
 
     def test_handler_metadata(self):
@@ -176,7 +176,7 @@ class TestTopicRegistry:
         metadata = {"description": "Test handler", "version": "1.0"}
 
         handler_id = self.registry.register_handler(
-            "test.topic", handler, handler_name="test_handler", metadata=metadata
+            "test.topic", handler, name="test_handler", metadata=metadata
         )
 
         handlers = self.registry.get_handlers("test.topic")
