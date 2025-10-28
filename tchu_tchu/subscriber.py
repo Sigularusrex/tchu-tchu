@@ -203,6 +203,8 @@ def create_topic_dispatcher(
 
 def get_subscribed_routing_keys(
     exclude_patterns: Optional[list[str]] = None,
+    celery_app=None,
+    force_import: bool = True,
 ) -> list[str]:
     """
     Get all routing keys that have handlers registered.
@@ -210,18 +212,46 @@ def get_subscribed_routing_keys(
     This includes routing keys from both @subscribe decorators and Event().subscribe() calls.
     Useful for auto-configuring Celery queue bindings.
 
+    **IMPORTANT**: If using with Celery autodiscover_tasks(), handlers may not be registered yet
+    when this function is called. Either:
+    1. Pass `celery_app` to force immediate task discovery
+    2. Manually import subscriber modules before calling this function
+    3. Call this function in a Celery worker_ready signal
+
     Args:
         exclude_patterns: Optional list of patterns to exclude (e.g., ['rpc.*'])
+        celery_app: Optional Celery app instance to force task discovery
+        force_import: If True and celery_app provided, forces immediate task import
 
     Returns:
         List of routing keys with registered handlers
 
     Example:
-        # Get all routing keys except RPC
-        keys = get_subscribed_routing_keys(exclude_patterns=['rpc.*'])
-        # Returns: ['user.created', 'order.updated', 'coolset.scranton.*', ...]
+        # Option 1: Pass Celery app (recommended)
+        keys = get_subscribed_routing_keys(celery_app=app)
+
+        # Option 2: Manual imports
+        import myapp.subscribers.user_subscriber  # noqa
+        keys = get_subscribed_routing_keys()
+
+        # Option 3: Exclude RPC patterns
+        keys = get_subscribed_routing_keys(celery_app=app, exclude_patterns=['rpc.*'])
     """
     import fnmatch
+
+    # Force task discovery if Celery app provided
+    if celery_app and force_import:
+        # This forces immediate import of autodiscovered tasks
+        # which triggers @subscribe decorator registration
+        try:
+            celery_app.loader.import_default_modules()
+        except Exception as e:
+            logger = get_logger(__name__)
+            logger.warning(
+                f"Failed to force import tasks from Celery app: {e}. "
+                f"Handlers may not be registered yet. Consider manually importing "
+                f"subscriber modules before calling get_subscribed_routing_keys()."
+            )
 
     registry = get_registry()
     all_keys = registry.get_all_routing_keys_and_patterns()

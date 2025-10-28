@@ -5,6 +5,9 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
+> **📢 v2.2.11 Released** - Critical fix for broadcast event routing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
+> If you're on v2.2.9, broadcast events may be silently failing. Update required!
+
 ## Features
 
 - ✨ **True Broadcast Messaging** - One event reaches multiple microservices
@@ -49,6 +52,49 @@ Each microservice:
 3. Runs Celery workers that consume from the queue
 4. All matching apps receive the same event simultaneously
 
+## RPC vs Broadcast Events
+
+tchu-tchu supports two messaging patterns:
+
+### 🔄 Broadcast Events (Pub/Sub)
+**One publisher → Multiple subscribers receive the same event**
+
+```python
+# Publisher
+client.publish('user.created', {'user_id': 123})
+
+# Subscriber 1 (notifications service)
+@subscribe('user.created')
+def send_welcome_email(event):
+    send_email(event['user_id'])
+
+# Subscriber 2 (analytics service)
+@subscribe('user.created')
+def track_signup(event):
+    track_event(event['user_id'])
+```
+
+**Use for:** Event notifications, logging, analytics, cache invalidation
+
+### ⚡ RPC (Request-Response)
+**One caller → One responder → Returns result**
+
+```python
+# Caller
+result = client.call('rpc.app_name.documents.list', {'company_id': 67})
+print(result)  # Returns document list
+
+# Responder (only data-room service handles this)
+@subscribe('rpc.app_name.documents.list')
+def list_documents(data):
+    docs = Document.objects.filter(company_id=data['company_id'])
+    return [doc.to_dict() for doc in docs]  # Returned to caller
+```
+
+**Use for:** Querying data, validation, calculations, inter-service API calls
+
+**Key Difference:** Broadcast events go to ALL subscribers; RPC calls go to ONE handler and return a response.
+
 ## Installation
 
 ```bash
@@ -61,7 +107,7 @@ pip install tchu-tchu
 
 Each microservice needs to configure its Celery app to consume from a queue bound to the `tchu_events` exchange.
 
-**tchu-tchu v2.2.3+ supports auto-configuration** - it automatically collects routing keys from all your `@subscribe` decorators and `Event().subscribe()` calls!
+**tchu-tchu v2.2.11+ supports auto-configuration** - it automatically collects routing keys from all your `@subscribe` decorators and `Event().subscribe()` calls!
 
 ```python
 # myapp/celery.py
@@ -92,14 +138,13 @@ app.autodiscover_tasks(['myapp.subscribers'])
 # ===== Auto-configure queue bindings from subscribed routing keys =====
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
-# Get all routing keys from @subscribe and Event().subscribe() calls
-# Exclude RPC patterns - those go to a separate queue
-broadcast_keys = get_subscribed_routing_keys(exclude_patterns=['rpc.*'])
+# ✅ IMPORTANT: Pass celery_app to force immediate handler registration
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
 
 # Build bindings automatically
-broadcast_bindings = [
+all_bindings = [
     binding(tchu_exchange, routing_key=key) 
-    for key in broadcast_keys
+    for key in all_routing_keys
 ]
 
 # Configure queues
@@ -108,30 +153,25 @@ app.conf.task_queues = (
     Queue(
         'myapp_queue',
         exchange=tchu_exchange,
-        bindings=broadcast_bindings,  # ✅ Auto-generated!
+        bindings=all_bindings,  # ✅ Auto-generated from your @subscribe decorators!
         durable=True,
-    ),
-    # RPC queue - for RPC calls to THIS service only
-    Queue(
-        'myapp_rpc_queue',
-        exchange=tchu_exchange,
-        routing_key='rpc.myapp.*',
-        durable=True,
-        priority=10,  # Higher priority for RPC
+        auto_delete=False,
     ),
 )
 
-# Route dispatcher to both queues
+# Route dispatcher to the queue
 app.conf.task_routes = {
-    'tchu_tchu.dispatch_event': [
-        {'queue': 'myapp_queue'},
-        {'queue': 'myapp_rpc_queue'},
-    ],
+    'tchu_tchu.dispatch_event': {'queue': 'myapp_queue'},
 }
 
 # Create the dispatcher task
 dispatcher = create_topic_dispatcher(app)
 ```
+
+**Key Points:**
+- ✅ **Always pass `celery_app=app`** to `get_subscribed_routing_keys()` - this ensures handlers are registered before queue configuration
+- ✅ Queue bindings are **automatically generated** from your `@subscribe` decorators
+- ✅ Both broadcast events and RPC calls can use the same queue (or separate them if you want different priorities)
 
 ### 2. Subscribe to Events
 
@@ -183,15 +223,25 @@ except TimeoutError:
 ```python
 # users/celery.py
 from celery import Celery
-from kombu import Exchange, Queue
-from tchu_tchu import create_topic_dispatcher
+from kombu import Exchange, Queue, binding
+from tchu_tchu import create_topic_dispatcher, get_subscribed_routing_keys
 
 app = Celery('users')
+app.autodiscover_tasks(['users.subscribers'])
 
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
+# Auto-collect routing keys from handlers
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
+
 app.conf.task_queues = (
-    Queue('users_queue', exchange=tchu_exchange, routing_key='user.*'),
+    Queue(
+        'users_queue',
+        exchange=tchu_exchange,
+        bindings=all_bindings,
+        durable=True,
+    ),
 )
 
 app.conf.task_routes = {
@@ -229,15 +279,25 @@ def create_user(request):
 ```python
 # notifications/celery.py
 from celery import Celery
-from kombu import Exchange, Queue
-from tchu_tchu import create_topic_dispatcher
+from kombu import Exchange, Queue, binding
+from tchu_tchu import create_topic_dispatcher, get_subscribed_routing_keys
 
 app = Celery('notifications')
+app.autodiscover_tasks(['notifications.subscribers'])
 
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
+# Auto-collect routing keys from handlers
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
+
 app.conf.task_queues = (
-    Queue('notifications_queue', exchange=tchu_exchange, routing_key='user.*'),
+    Queue(
+        'notifications_queue',
+        exchange=tchu_exchange,
+        bindings=all_bindings,
+        durable=True,
+    ),
 )
 
 app.conf.task_routes = {
@@ -260,15 +320,25 @@ def send_welcome_email(event):
 ```python
 # analytics/celery.py
 from celery import Celery
-from kombu import Exchange, Queue
-from tchu_tchu import create_topic_dispatcher
+from kombu import Exchange, Queue, binding
+from tchu_tchu import create_topic_dispatcher, get_subscribed_routing_keys
 
 app = Celery('analytics')
+app.autodiscover_tasks(['analytics.subscribers'])
 
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
+# Auto-collect routing keys from handlers
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
+
 app.conf.task_queues = (
-    Queue('analytics_queue', exchange=tchu_exchange, routing_key='#'),  # All events
+    Queue(
+        'analytics_queue',
+        exchange=tchu_exchange,
+        bindings=all_bindings,
+        durable=True,
+    ),
 )
 
 app.conf.task_routes = {
@@ -288,13 +358,39 @@ def track_user_event(event):
 
 ## Routing Key Patterns
 
-RabbitMQ topic exchanges support powerful routing patterns:
+RabbitMQ topic exchanges support powerful routing patterns using wildcards:
 
-- `user.created` - Exact match only
-- `user.*` - Matches `user.created`, `user.updated`, `user.deleted`
-- `*.created` - Matches `user.created`, `order.created`, etc.
-- `#` - Matches all events
-- `order.#` - Matches `order.created`, `order.payment.completed`, etc.
+### Wildcard Types
+
+- **`*` (star)** - Matches exactly one word
+  - `user.*` matches `user.created`, `user.updated`, `user.deleted`
+  - `*.created` matches `user.created`, `order.created`, etc.
+  - Does NOT match `user.profile.updated` (two words after `user`)
+
+- **`#` (hash)** - Matches zero or more words
+  - `user.#` matches `user.created`, `user.profile.updated`, `user.anything.else.here`
+  - `#` matches ALL events
+  - `order.#` matches `order.created`, `order.payment.completed`, `order.shipping.tracking.updated`
+
+### Examples
+
+| Pattern | Matches | Doesn't Match |
+|---------|---------|---------------|
+| `user.created` | `user.created` | `user.updated`, `order.created` |
+| `user.*` | `user.created`, `user.deleted` | `user.profile.updated` |
+| `user.#` | `user.created`, `user.profile.updated` | `order.created` |
+| `*.created` | `user.created`, `order.created` | `user.updated` |
+| `#` | Everything | Nothing |
+| `rpc.app_name.*` | `rpc.app_name.documents`, `rpc.app_name.exports` | `rpc.app_name.documents` |
+
+### RPC Naming Convention
+
+By convention, RPC routing keys start with `rpc.`:
+- `rpc.app_name.documents.list` - RPC call to data-room service
+- `rpc.app_name.products.validate` - RPC call to app_name service
+- `app_name.sub_app_or_model.order.enriched` - Broadcast event (not RPC)
+
+This helps distinguish between point-to-point RPC calls and broadcast events.
 
 ## RPC (Request-Response) Pattern
 
@@ -555,6 +651,31 @@ TchuEvent.set_context_helper(my_context_helper)
 event = MyEvent(context_helper=my_context_helper)
 ```
 
+**⚠️ Important:** Context helpers must be **regular functions**, not bound methods. If you encounter `TypeError: context_helper() takes 1 positional argument but 2 were given`, ensure you're passing a function, not a method:
+
+```python
+# ❌ WRONG - Don't pass bound methods
+class MyClass:
+    def my_helper(self, event_data):
+        return {}
+
+obj = MyClass()
+TchuEvent.set_context_helper(obj.my_helper)  # Will pass (self, event_data)
+
+# ✅ CORRECT - Use standalone functions
+def my_helper(event_data):
+    return {}
+
+TchuEvent.set_context_helper(my_helper)  # Will pass (event_data)
+
+# ✅ WORKAROUND - Use *args if you need to support both
+def safe_context_helper(*args, **kwargs):
+    """Handles both (event_data) and (self, event_data) signatures."""
+    event_data = args[1] if len(args) >= 2 else args[0]
+    # Your logic here
+    return create_context(event_data)
+```
+
 ### Django Integration
 
 **Recommended: Put context helper in your celery.py file**
@@ -774,10 +895,27 @@ def my_handler(event_data):
 ```
 
 Parameters:
-- `routing_key` - Topic pattern to subscribe to
+- `routing_key` - Topic pattern to subscribe to (e.g., `user.created`, `user.*`, `#`)
 - `name` - Optional handler name
 - `handler_id` - Optional unique handler ID
 - `metadata` - Optional metadata dict
+
+### get_subscribed_routing_keys()
+
+```python
+from tchu_tchu import get_subscribed_routing_keys
+
+# ✅ IMPORTANT: Always pass celery_app
+all_routing_keys = get_subscribed_routing_keys(
+    celery_app=app,  # Required to force handler registration
+    exclude_patterns=None,  # Optional: list of patterns to exclude (e.g., ['rpc.*'])
+    force_import=True,  # Default: True (forces immediate task import)
+)
+```
+
+**Returns:** List of all routing keys that have handlers registered via `@subscribe` or `Event().subscribe()`.
+
+**Important:** Without `celery_app`, handlers may not be registered yet (due to lazy `autodiscover_tasks()`), resulting in an empty list and incorrect queue bindings.
 
 ### create_topic_dispatcher()
 
@@ -791,7 +929,7 @@ dispatcher = create_topic_dispatcher(
 )
 ```
 
-Creates a Celery task that dispatches incoming events to local handlers.
+Creates a Celery task that dispatches incoming events to local handlers. Call this in your `celery.py` after configuring queues.
 
 ## Migration from v1.x
 
@@ -859,13 +997,54 @@ def handle_user_created(event):
 
 ## Troubleshooting
 
-### Events Not Received
+### Broadcast Events Not Received (v2.2.11 Fix)
+
+**Symptom:** RPC works but broadcast events are silently failing.
+
+**Cause:** You're not passing `celery_app` to `get_subscribed_routing_keys()`, resulting in empty routing keys `[]` and incorrect queue bindings.
+
+**Solution:**
+```python
+# ❌ WRONG (returns empty list)
+all_routing_keys = get_subscribed_routing_keys()
+
+# ✅ CORRECT (forces handler registration)
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+```
+
+**If you upgraded from v2.2.9**, you MUST:
+1. Update code to pass `celery_app=app`
+2. Delete old queues: `rabbitmqctl delete_queue your_queue_name`
+3. Restart services
+
+See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for details.
+
+### Verify Queue Bindings
+
+Check that your queue has wildcard bindings:
+
+```bash
+rabbitmqctl list_bindings | grep "your_queue_name"
+```
+
+**Should see:**
+```
+tchu_events  exchange  your_queue  queue  app_name.sub_app_or_model.#  []  ✅
+tchu_events  exchange  your_queue  queue  app_name.#  []  ✅
+```
+
+**NOT:**
+```
+tchu_events  exchange  your_queue  queue  your_queue  []  ❌ Wrong!
+```
+
+### Events Still Not Received
 
 1. **Check Celery is running:** `celery -A myapp worker -l info`
-2. **Check queue bindings:** Use RabbitMQ management UI to verify queue is bound to exchange
-3. **Check routing keys:** Ensure publisher routing key matches subscriber patterns
+2. **Check handler registration:** Look for `Registered handler 'X' for routing key 'Y'` in logs
+3. **Check routing keys match:** Publisher routing key must match subscriber pattern
 4. **Check task routes:** Verify `tchu_tchu.dispatch_event` routes to your queue
-5. **Check logs:** Look for "Registered handler" and "Published message" log entries
+5. **Check queue bindings:** Verify in RabbitMQ that patterns match your handlers
 
 ### "Received unregistered task" Error
 
@@ -874,13 +1053,40 @@ This means Celery received a message for a task it doesn't recognize. Check:
 - Task routes are configured correctly
 - The dispatcher task name matches in config and code
 
+### Context Helper TypeError
+
+**Error:** `TypeError: context_helper() takes 1 positional argument but 2 were given`
+
+**Cause:** You passed a bound method (instance method) instead of a standalone function.
+
+**Solution:**
+```python
+# ❌ WRONG - Bound method
+obj = MyClass()
+TchuEvent.set_context_helper(obj.my_helper)
+
+# ✅ CORRECT - Standalone function
+def my_context_helper(event_data):
+    return create_context(event_data)
+
+TchuEvent.set_context_helper(my_context_helper)
+
+# ✅ WORKAROUND - Support both signatures
+def safe_helper(*args, **kwargs):
+    event_data = args[1] if len(args) >= 2 else args[0]
+    return create_context(event_data)
+```
+
+See [Framework Integration](#framework-integration) for more details.
+
 ### Multiple Apps Not Receiving Events
 
 Each app MUST have:
 1. Its own unique queue name
-2. Queue bound to the `tchu_events` exchange
+2. Queue bound to the `tchu_events` exchange with correct routing patterns
 3. The `create_topic_dispatcher()` call in its Celery config
 4. Celery worker running
+5. Handlers registered (visible in logs at startup)
 
 ## Performance
 
@@ -894,129 +1100,47 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 ## Changelog
 
-### v2.2.3 (2025-10-27)
+For detailed version history, see [CHANGELOG.md](./CHANGELOG.md).
 
-**Added:**
-- `get_subscribed_routing_keys()` - Auto-collect routing keys from all `@subscribe` and `Event().subscribe()` calls
-- Auto-configuration support for Celery queue bindings
-- `exclude_patterns` parameter to filter out routing keys (e.g., exclude RPC patterns)
-- `get_all_routing_keys_and_patterns()` method in `TopicRegistry`
+### v2.2.11 (2025-10-28) - Current
 
-**Changed:**
-- Updated Quick Start documentation with auto-configuration example
-- Recommended two-queue setup: main (auto-configured) + RPC (manual)
-- RPC queue can have higher priority for faster response times
-
-**Improved:**
-- Queue configuration now auto-updates when you add/remove handlers
-- No need to manually maintain routing key lists in celery.py
-
-### v2.2.2 (2025-10-27)
+**🚨 Critical Fix: Broadcast Events Now Work**
 
 **Fixed:**
-- `UnboundLocalError` when using `JSONField` in DRF serializers
-- Removed redundant local `Dict` import that shadowed module-level import
-
-### v2.2.0 (2025-10-26) - Framework Agnostic
+- **CRITICAL**: Fixed broadcast events not being received due to incorrect RabbitMQ queue bindings
+- `get_subscribed_routing_keys()` was being called before handlers were registered
+- RPC calls worked, but broadcast events failed silently
 
 **Added:**
-- Injectable context helper system via `TchuEvent.set_context_helper()`
-- Per-instance context helper support
-- `TchuEvent.get_context_helper()` class method
+- New `celery_app` parameter to `get_subscribed_routing_keys()` to force immediate handler registration
+- New `force_import` parameter (default: `True`) to control import behavior
+- Improved documentation and migration guide
 
-**Changed:**
-- **BREAKING (for framework integrations):** Removed hardcoded Django `_reconstruct_context_from_data()` method
-- `request_context` property now uses configured context helper
-- Framework-specific logic must now be provided via context helper
-
-**Removed:**
-- Hardcoded `MockUser`, `MockCompany`, `MockUserCompany`, `MockRequest` classes
-- Django-specific context reconstruction from core library
-
-**Migration:**
-If you were relying on `request_context`, you now need to set a context helper:
+**Migration Required:**
 ```python
-def my_context_helper(event_data):
-    # Your framework-specific logic
-    return {'request': reconstructed_request}
+# ❌ OLD (v2.2.9)
+all_routing_keys = get_subscribed_routing_keys()
 
-TchuEvent.set_context_helper(my_context_helper)
+# ✅ NEW (v2.2.11)
+all_routing_keys = get_subscribed_routing_keys(celery_app=app)
 ```
 
-### v2.1.0 (2025-10-26)
+**IMPORTANT:** If upgrading from v2.2.9:
+1. Update code to pass `celery_app=app`
+2. Delete old queues from RabbitMQ
+3. Restart services
 
-**Added:**
-- RPC (request-response) support via `client.call()`
-- Handlers can return values that are sent back to the caller
-- Comprehensive RPC documentation and examples
+See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete upgrade instructions.
 
-**Changed:**
-- Producer now properly handles RPC responses from dispatcher
-- Improved error handling for RPC timeouts and failures
+---
 
-### v2.0.1 (2025-10-26)
+### Recent Versions
 
-**Fixed:**
-- Added missing `log_handler_executed()` function to logging handlers
-- Fixed ImportError when importing `create_topic_dispatcher`
-
-### v2.0.0 (2025-10-26) - BREAKING CHANGE
-
-**Complete redesign** using RabbitMQ topic exchanges for true broadcast messaging.
-
-**Added:**
-- Topic exchange-based architecture
-- `create_topic_dispatcher()` for creating event dispatcher tasks
-- True broadcast support (multiple apps receive same event)
-- Kombu integration for direct exchange publishing
-- Comprehensive documentation and examples
-
-**Changed:**
-- Producer now uses topic exchange instead of task discovery
-- Subscriber uses dispatcher pattern instead of individual tasks
-- Configuration now requires queue bindings in Celery config
-- Terminology: "topic" → "routing_key" throughout
-
-**Removed:**
-- Task discovery/inspection logic (no longer needed)
-- `register_remote_task()` (deprecated, kept for compatibility)
-
-**Performance:**
-- 100x faster than v1.x (no inspection overhead)
-- Reduced latency from ~1000ms to ~10ms
-
-### v1.4.0 (2025-10-26)
-- Added generic queue routing via Celery inspect (replaced hardcoded app names)
-- Fixed cross-app communication with dynamic queue detection
-
-### v1.3.2 (2025-10-26)
-- Added queue routing based on task names (bad design, later removed)
-
-### v1.3.1 (2025-10-26)
-- Updated documentation for "Received unregistered task" errors
-
-### v1.3.0 (2025-10-26)
-- Added automatic task discovery via `inspect.registered()`
-- Enabled cross-app event publishing and consumption
-
-### v1.2.0 (2025-10-25)
-- Fixed context serialization with DRF serializers
-- Fixed authentication details preservation in event context
-
-### v1.1.0 (2025-10-25)
-- Added cross-app task scanning
-- Fixed task registry lookup
-
-### v1.0.3 (2025-10-25)
-- Fixed `UnboundLocalError` in DRF to Pydantic conversion
-- Fixed callable defaults handling
-
-### v1.0.2 (2025-10-25)
-- Fixed context handling in DRF serializers
-- Added mock request objects for event context
-
-### v1.0.1 (2025-10-25)
-- Initial release with Celery-based messaging
+**v2.2.3** - Auto-configuration with `get_subscribed_routing_keys()`  
+**v2.2.2** - Fixed `JSONField` serialization errors  
+**v2.2.0** - Framework-agnostic with injectable context helpers  
+**v2.1.0** - RPC (request-response) support  
+**v2.0.0** - Complete redesign with topic exchanges (100x faster)
 
 ## License
 
