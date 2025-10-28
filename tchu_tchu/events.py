@@ -6,7 +6,7 @@ from typing import Optional, Type, Callable, Dict, Any
 from tchu_tchu.client import TchuClient
 from tchu_tchu.registry import get_registry
 from tchu_tchu.utils.json_encoder import loads_message
-from tchu_tchu.utils.error_handling import SerializationError
+from tchu_tchu.utils.error_handling import SerializationError, TchuRPCException
 from tchu_tchu.logging.handlers import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +77,7 @@ class TchuEvent:
         topic: Optional[str] = None,
         request_serializer_class: Optional[Type] = None,
         response_serializer_class: Optional[Type] = None,
+        error_serializer_class: Optional[Type] = None,
         handler: Optional[Callable] = None,
         context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> None:
@@ -86,7 +87,8 @@ class TchuEvent:
         Args:
             topic: Topic name (uses Meta.topic if not provided)
             request_serializer_class: DRF serializer class for requests
-            response_serializer_class: DRF serializer class for responses
+            response_serializer_class: DRF serializer class for responses (success cases)
+            error_serializer_class: DRF serializer class for error responses (TchuRPCException)
             handler: Handler function for this event
             context_helper: Optional context helper function (overrides class-level helper)
         """
@@ -100,6 +102,9 @@ class TchuEvent:
             response_serializer_class = response_serializer_class or getattr(
                 meta, "response_serializer_class", None
             )
+            error_serializer_class = error_serializer_class or getattr(
+                meta, "error_serializer_class", None
+            )
             handler = handler or getattr(meta, "handler", None)
 
         if not topic:
@@ -110,6 +115,7 @@ class TchuEvent:
         self.topic = topic
         self.request_serializer_class = request_serializer_class
         self.response_serializer_class = response_serializer_class
+        self.error_serializer_class = error_serializer_class
         self.handler = handler
         self.validated_data = None
         self.context = None
@@ -181,6 +187,31 @@ class TchuEvent:
 
                 # Call the original handler
                 return self.handler(event_instance)
+
+            except TchuRPCException as e:
+                # Convert to response dict
+                error_response = e.to_response_dict()
+                logger.warning(
+                    f"RPC error: {e.message} ({e.code})",
+                    extra={"topic": self.topic, "error_code": e.code},
+                )
+
+                # Validate with error_serializer if defined
+                if event_instance.error_serializer_class and DRF_AVAILABLE:
+                    try:
+                        error_serializer = event_instance.error_serializer_class(
+                            data=error_response
+                        )
+                        if error_serializer.is_valid():
+                            return dict(error_serializer.validated_data)
+                        else:
+                            logger.error(
+                                f"Error response validation failed: {error_serializer.errors}"
+                            )
+                    except Exception as validation_err:
+                        logger.error(f"Error serializer failed: {validation_err}")
+
+                return error_response
 
             except Exception as e:
                 logger.error(
@@ -315,6 +346,53 @@ class TchuEvent:
             logger.error(f"Response serialization failed: {e}", exc_info=True)
             raise SerializationError(f"Failed to serialize response: {e}")
 
+    def serialize_error(
+        self, data: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Validate and serialize error response data.
+
+        Args:
+            data: Error response data to serialize (from TchuRPCException)
+            context: Optional context
+
+        Returns:
+            Validated error response data
+        """
+        if not self.error_serializer_class:
+            # If no error serializer, just return data as-is
+            return data
+
+        try:
+            # If we have a DRF serializer, use it for validation
+            if self.error_serializer_class and DRF_AVAILABLE:
+                serializer_kwargs = {
+                    "data": data,
+                }
+
+                if context:
+                    serializer_kwargs["context"] = context
+
+                drf_serializer = self.error_serializer_class(**serializer_kwargs)
+
+                if not drf_serializer.is_valid():
+                    raise SerializationError(
+                        f"DRF error serializer validation failed: {drf_serializer.errors}"
+                    )
+
+                return dict(drf_serializer.validated_data)
+
+            else:
+                # No serializer, handle both dict and JSON string input
+                if isinstance(data, str):
+                    return loads_message(data)
+                else:
+                    return data
+
+        except Exception as e:
+            logger.error(f"Error response serialization failed: {e}", exc_info=True)
+            raise SerializationError(f"Failed to serialize error response: {e}")
+
     def publish(self) -> None:
         """
         Validate and publish the event (fire-and-forget).
@@ -343,8 +421,37 @@ class TchuEvent:
 
         response = self.client.call(self.topic, self.validated_data, timeout=timeout)
 
-        if self._response_serializer:
-            return self.serialize_response(response)
+        # Detect error responses (from TchuRPCException)
+        is_error = isinstance(response, dict) and response.get("error_code") is not None
+
+        # Route to appropriate serializer
+        if is_error and self.error_serializer_class:
+            # Validate error response
+            try:
+                validated_response = self.serialize_error(response)
+                logger.debug(f"RPC error validated for {self.topic}")
+                return validated_response
+            except SerializationError as e:
+                logger.error(
+                    f"Error response validation failed for {self.topic}: {e}. "
+                    f"Handler returned: {response}",
+                    exc_info=True,
+                )
+                raise
+
+        elif self.response_serializer_class:
+            # Validate success response
+            try:
+                validated_response = self.serialize_response(response)
+                logger.debug(f"RPC response validated for {self.topic}")
+                return validated_response
+            except SerializationError as e:
+                logger.error(
+                    f"Response validation failed for {self.topic}: {e}. "
+                    f"Handler returned: {response}",
+                    exc_info=True,
+                )
+                raise
 
         return response
 

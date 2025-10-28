@@ -197,13 +197,26 @@ class CeleryProducer:
                     if results:
                         first_result = results[0]
                         if first_result.get("status") == "success":
-                            return first_result.get("result")
+                            result = first_result.get("result")
+                            # Check if handler returned None
+                            if result is None:
+                                logger.warning(
+                                    f"Handler for '{routing_key}' returned None. "
+                                    f"RPC handlers should return a response dict."
+                                )
+                            return result
                         else:
                             # Handler failed
                             error = first_result.get("error", "Unknown error")
-                            raise PublishError(f"Handler failed: {error}")
+                            handler_name = first_result.get("handler", "unknown")
+                            raise PublishError(
+                                f"Handler '{handler_name}' failed: {error}"
+                            )
                     else:
-                        raise PublishError("No results returned from handler")
+                        raise PublishError(
+                            f"No results returned from handler for routing key '{routing_key}'. "
+                            f"Handler may have executed but failed to return a response."
+                        )
 
                 # If response is not a dict, return it as-is (backward compatibility)
                 return response

@@ -338,6 +338,185 @@ def calculate_order_total(data):
 - Requires a result backend (Redis, database, etc.) configured in Celery
 - Use appropriate timeouts to avoid hanging requests
 
+### RPC Error Handling with TchuRPCException
+
+Use `TchuRPCException` to return business logic errors as responses (not exceptions). Define separate serializers for success and error cases:
+
+```python
+from tchu_tchu import TchuEvent, TchuRPCException
+from rest_framework import serializers
+
+# Define your serializers
+class RequestSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+class SuccessResponseSerializer(serializers.Serializer):
+    transaction_id = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    status = serializers.CharField()
+
+class ErrorResponseSerializer(serializers.Serializer):
+    success = serializers.BooleanField()
+    error_message = serializers.CharField()
+    error_code = serializers.CharField()
+    error_details = serializers.JSONField(required=False, default=dict)
+
+# Define your event
+class ProcessPaymentEvent(TchuEvent):
+    class Meta:
+        topic = "rpc.payments.process"
+        request_serializer_class = RequestSerializer
+        response_serializer_class = SuccessResponseSerializer
+        error_serializer_class = ErrorResponseSerializer
+
+# Handler - raise TchuRPCException for business logic errors
+def process_payment_handler(event):
+    user_id = event["user_id"]
+    amount = event["amount"]
+    
+    # Business validation - raise TchuRPCException
+    if amount <= 0:
+        raise TchuRPCException(
+            message="Amount must be positive",
+            code="INVALID_AMOUNT",
+            details={"amount": str(amount)}
+        )
+    
+    if not user_exists(user_id):
+        raise TchuRPCException(
+            message="User not found",
+            code="USER_NOT_FOUND",
+            details={"user_id": user_id}
+        )
+    
+    # Process and return success response
+    transaction = charge_user(user_id, amount)
+    return {
+        "transaction_id": transaction.id,
+        "amount": transaction.amount,
+        "status": "completed"
+    }
+
+ProcessPaymentEvent(handler=process_payment_handler).subscribe()
+
+# Caller - check for error_code to detect errors
+event = ProcessPaymentEvent()
+event.serialize_request({"user_id": 123, "amount": 50.00})
+response = event.call(timeout=30)
+
+if "error_code" in response:
+    print(f"Failed: {response['error_message']} ({response['error_code']})")
+else:
+    print(f"Success: {response['transaction_id']}")
+```
+
+**Benefits:**
+- **Clean separation**: Success and error responses have separate schemas
+- **No mixed serializers**: No need to make all fields optional
+- **Errors as responses**: Business logic errors returned as proper responses (not exceptions)
+- **Better validation**: Each response type is validated against its own serializer
+- **No timeouts**: Errors don't cause "No handlers found" or timeout errors
+- **Clear error handling**: Caller can distinguish between business logic errors and system failures
+
+**Error Response Structure:**
+```python
+{
+    "success": False,
+    "error_message": "User not found",
+    "error_code": "USER_NOT_FOUND",
+    "error_details": {"user_id": 123}
+}
+```
+
+**Success Response Structure:**
+```python
+{
+    "transaction_id": "txn_123",
+    "amount": 50.00,
+    "status": "completed"
+}
+```
+
+**Note:** If you don't define `error_serializer_class`, error responses will still work but won't be validated.
+
+#### Custom RPC Exceptions
+
+Create domain-specific exceptions by subclassing `TchuRPCException` and overriding `to_response_dict()`:
+
+```python
+from tchu_tchu import TchuRPCException
+
+class PaymentException(TchuRPCException):
+    """Custom payment error with specific fields."""
+    
+    def __init__(self, payment_id: str, error_type: str, message: str, retry_after: int = None):
+        self.payment_id = payment_id
+        self.error_type = error_type
+        self.retry_after = retry_after
+        super().__init__(message=message, code=error_type)
+    
+    def to_response_dict(self) -> dict:
+        """Return custom response structure."""
+        response = {
+            "payment_id": self.payment_id,
+            "error_type": self.error_type,
+            "message": self.message,
+        }
+        if self.retry_after:
+            response["retry_after"] = self.retry_after
+        return response
+
+# Handler
+def payment_handler(event):
+    if insufficient_funds():
+        raise PaymentException(
+            payment_id="pay_123",
+            error_type="INSUFFICIENT_FUNDS",
+            message="Your account balance is too low",
+            retry_after=3600  # Retry after 1 hour
+        )
+    # ...
+
+# Define matching error serializer
+class PaymentErrorSerializer(serializers.Serializer):
+    payment_id = serializers.CharField()
+    error_type = serializers.CharField()
+    message = serializers.CharField()
+    retry_after = serializers.IntegerField(required=False)
+```
+
+#### Exception Guide
+
+**Use `TchuRPCException` for:**
+- ✅ Business logic errors in RPC handlers
+- ✅ Validation failures (user input, business rules)
+- ✅ Expected error conditions (user not found, insufficient funds)
+- 🎯 **Effect**: Returns error response to caller (not an exception)
+
+```python
+if not user_exists(user_id):
+    raise TchuRPCException("User not found", code="USER_NOT_FOUND")
+```
+
+**Use other exceptions for:**
+- ✅ System/infrastructure errors (database down, broker unavailable)
+- ✅ Unexpected errors (bugs, null pointers)
+- ✅ Broadcast event handler failures (no caller to return to)
+- 🎯 **Effect**: Propagates as exception, RPC call times out
+
+```python
+from tchu_tchu.utils.error_handling import SerializationError, PublishError
+
+# Serialization errors
+if not serializer.is_valid():
+    raise SerializationError(f"Invalid data: {serializer.errors}")
+
+# Broker errors
+if not broker.is_connected():
+    raise PublishError("Failed to connect to RabbitMQ")
+```
+
 ## Framework Integration
 
 ### Custom Context Reconstruction

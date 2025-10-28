@@ -5,6 +5,7 @@ from tchu_tchu.utils.error_handling import (
     TchuError,
     ConnectionError,
     SerializationError,
+    TchuRPCException,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "TchuError",
     "ConnectionError",
     "SerializationError",
+    "TchuRPCException",
 ]

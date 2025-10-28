@@ -16,6 +16,7 @@ from tchu_tchu.subscriber import (
     get_subscribed_routing_keys,
 )
 from tchu_tchu.events import TchuEvent
+from tchu_tchu.utils.error_handling import TchuRPCException
 from tchu_tchu.version import __version__
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "create_topic_dispatcher",
     "get_subscribed_routing_keys",
     "TchuEvent",
+    "TchuRPCException",
     "__version__",
 ]
