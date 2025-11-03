@@ -40,14 +40,29 @@ app.autodiscover_tasks(["my_service.subscribers"])
 all_routing_keys = get_subscribed_routing_keys()
 ```
 
-**After (v2.2.11):**
+**After (v2.2.11) - Option 1: Manual Imports (Recommended):**
+```python
+from tchu_tchu import get_subscribed_routing_keys
+
+app = Celery("my_service")
+
+# ✅ RECOMMENDED: Explicitly import all subscriber modules
+import my_service.subscribers.user_subscriber  # noqa
+import my_service.subscribers.order_subscriber  # noqa
+import my_service.subscribers.other_subscriber  # noqa
+
+# Now get routing keys - handlers are already registered
+all_routing_keys = get_subscribed_routing_keys()
+```
+
+**After (v2.2.11) - Option 2: Pass celery_app (Production only):**
 ```python
 from tchu_tchu import get_subscribed_routing_keys
 
 app = Celery("my_service")
 app.autodiscover_tasks(["my_service.subscribers"])
 
-# Pass celery_app to force immediate handler registration
+# Pass celery_app to force immediate handler registration (may cause issues locally)
 all_routing_keys = get_subscribed_routing_keys(celery_app=app)
 ```
 
@@ -122,13 +137,16 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # Configure topic exchange
 tchu_exchange = Exchange("tchu_events", type="topic", durable=True)
 
-# Autodiscover tasks
-app.autodiscover_tasks(
-    ["scranton.subscribers", "cs_pulse_consumer.subscribers", "eudr.subscribers"]
-)
+# ✅ RECOMMENDED: Manually import all subscriber modules
+import scranton.subscribers.information_request_subscriber  # noqa
+import scranton.subscribers.value_chain_subscriber  # noqa
+import scranton.subscribers.data_import_subscriber  # noqa
+import cs_pulse_consumer.subscribers.risk_assessment_subscriber  # noqa
+import cs_pulse_consumer.subscribers.storage_subscriber  # noqa
+import eudr.subscribers.order_subscriber  # noqa
 
-# ✅ IMPORTANT: Pass celery_app to force handler registration
-all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+# Get routing keys from registered handlers
+all_routing_keys = get_subscribed_routing_keys()
 
 # Build bindings from registered handlers
 all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
@@ -169,12 +187,14 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 
 tchu_exchange = Exchange("tchu_events", type="topic", durable=True)
 
-app.autodiscover_tasks(
-    ["data_room.subscribers", "cs_eunice_consumer.subscribers", "cs_pulse_consumer.subscribers"]
-)
+# ✅ RECOMMENDED: Manually import all subscriber modules
+import data_room.subscribers.document_subscriber  # noqa
+import data_room.subscribers.observability_subscriber  # noqa
+import cs_eunice_consumer.subscribers.eunice_subscriber  # noqa
+import cs_pulse_consumer.subscribers.compliance_subscriber  # noqa
 
-# ✅ Pass celery_app for immediate handler registration
-all_routing_keys = get_subscribed_routing_keys(celery_app=app)
+# Get routing keys from registered handlers
+all_routing_keys = get_subscribed_routing_keys()
 
 all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
 
@@ -197,14 +217,14 @@ dispatcher = create_topic_dispatcher(app)
 
 ---
 
-## Alternative: Manual Imports (Advanced)
+## Recommended Approach: Manual Imports
 
-If you prefer explicit control, you can manually import subscriber modules:
+**This is the most reliable approach** and works in all environments (local, production, GCP):
 
 ```python
 from tchu_tchu import get_subscribed_routing_keys
 
-# Explicit imports (forces immediate handler registration)
+# ✅ Explicit imports (forces immediate handler registration)
 import scranton.subscribers.information_request_subscriber  # noqa
 import scranton.subscribers.value_chain_subscriber  # noqa
 import scranton.subscribers.data_import_subscriber  # noqa
@@ -215,11 +235,15 @@ import cs_pulse_consumer.subscribers.storage_subscriber  # noqa
 all_routing_keys = get_subscribed_routing_keys()
 ```
 
-This approach:
-- ✅ Slightly faster (no autodiscovery overhead)
-- ✅ More explicit
-- ❌ More verbose
-- ❌ Requires manual maintenance when adding new subscribers
+**Why this is best:**
+- ✅ Works in local development and production
+- ✅ No timing issues with autodiscover_tasks()
+- ✅ No conflicts with Django runserver auto-reload
+- ✅ More explicit - you can see what's imported
+- ✅ Easier to debug
+- ❌ Requires manual maintenance when adding new subscribers (but that's minor)
+
+**Note:** If you use `celery_app=app` locally with Django runserver, you may see "No handlers found" errors due to double-import timing issues. Manual imports avoid this problem entirely.
 
 ---
 

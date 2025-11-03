@@ -7,6 +7,9 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 
 > **📢 v2.2.11 Released** - Critical fix for broadcast event routing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
 > If you're on v2.2.9, broadcast events may be silently failing. Update required!
+>
+> **🚀 Setting up Celery?** See **[Config Template →](./CELERY_CONFIG_TEMPLATE.md)**  
+> **❌ Getting "No handlers found" errors?** See **[Troubleshooting Guide →](./TROUBLESHOOTING_RPC_HANDLERS.md)**
 
 ## Features
 
