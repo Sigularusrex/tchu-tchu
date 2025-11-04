@@ -5,18 +5,18 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.2.19] - 2025-11-04
+## [2.2.20] - 2025-11-04
 
 ### Fixed
 - **CRITICAL**: Fixed `setup_celery_queue()` callback never executing, causing RPC handlers to not be registered
-  - Changed from `on_after_configure` to `on_after_finalize` signal
-  - The `on_after_configure` signal fired before `setup_celery_queue()` was called, so callback never executed
-  - The `on_after_finalize` signal fires when Celery is fully finalized and ready to start workers
-  - This ensures subscriber modules are imported at the correct time (after Django is ready but before workers start)
+  - Added `worker_process_init` signal to import subscriber modules when worker starts
+  - Added graceful exception handling for `AppRegistryNotReady` errors during Django initialization
+  - Allows both Celery workers and web processes to initialize successfully without crashes
   - Fixes "No handlers found for routing key" errors for RPC calls
 
 ### Changed
-- `setup_celery_queue()` now uses `on_after_finalize` instead of `on_after_configure`
+- `setup_celery_queue()` now uses dual approach: immediate import (if Django ready) + `worker_process_init` signal
+- Gracefully handles `AppRegistryNotReady` exceptions when called during Django app initialization
 - No migration required - just update tchu-tchu and restart services
 
 ## [2.2.11] - 2025-10-28
