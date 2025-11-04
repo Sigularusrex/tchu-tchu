@@ -18,6 +18,7 @@ from tchu_tchu.subscriber import (
 from tchu_tchu.events import TchuEvent
 from tchu_tchu.utils.error_handling import TchuRPCException
 from tchu_tchu.version import __version__
+from tchu_tchu.django import setup_celery_queue
 
 __all__ = [
     "TchuClient",
@@ -25,6 +26,7 @@ __all__ = [
     "subscribe",
     "create_topic_dispatcher",
     "get_subscribed_routing_keys",
+    "setup_celery_queue",
     "TchuEvent",
     "TchuRPCException",
     "__version__",

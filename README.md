@@ -5,10 +5,11 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
-> **📢 v2.2.11 Released** - Critical fix for broadcast event routing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
-> If you're on v2.2.9, broadcast events may be silently failing. Update required!
+> **🚀 v2.2.12 Released** - Simplified Django integration! One-line setup replaces 60+ lines of boilerplate.  
+> **[See Quick Start →](#django--celery-simplified-setup)**
 >
-> **🚀 Setting up Celery?** See **[Config Template →](./CELERY_CONFIG_TEMPLATE.md)**  
+> **📢 v2.2.11 Critical Fix** - If you're on v2.2.9, broadcast events may be silently failing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
+>
 > **❌ Getting "No handlers found" errors?** See **[Troubleshooting Guide →](./TROUBLESHOOTING_RPC_HANDLERS.md)**
 
 ## Features
@@ -18,8 +19,9 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 - 🎯 **Topic-based Routing** - RabbitMQ topic exchange with wildcard patterns
 - 🔄 **Drop-in Replacement** - Compatible with original `tchu` API
 - 📦 **Pydantic Integration** - Type-safe event serialization
-- 🛡️ **Django Support** - Built-in Django REST Framework integration
+- 🛡️ **Django Support** - Built-in Django REST Framework integration with one-line setup
 - ⚡ **Fast** - No task discovery or inspection overhead
+- 🎨 **Simple** - One function call replaces 60+ lines of boilerplate configuration
 
 ## Architecture
 
@@ -106,11 +108,74 @@ pip install tchu-tchu
 
 ## Quick Start
 
-### 1. Configure Celery (Each Microservice)
+### Django + Celery (Simplified Setup)
 
-Each microservice needs to configure its Celery app to consume from a queue bound to the `tchu_events` exchange.
+**🚀 tchu-tchu v2.2.12+ includes a one-line Django helper** that handles all the boilerplate:
 
-**tchu-tchu v2.2.11+ supports auto-configuration** - it automatically collects routing keys from all your `@subscribe` decorators and `Event().subscribe()` calls!
+```python
+# myapp/celery.py
+import os
+import django
+
+from celery import Celery
+from tchu_tchu import setup_celery_queue
+from tchu_tchu.events import TchuEvent
+
+# 1. Initialize Django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings.production")
+django.setup()
+
+# 2. Create Celery app
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# 3. Optional: Set context helper for Django request reconstruction
+def create_django_context(event_data):
+    from types import SimpleNamespace
+    user_data = event_data.get("user")
+    if not user_data:
+        return {}
+    mock_request = SimpleNamespace()
+    mock_request.user = SimpleNamespace(**user_data)
+    return {"request": mock_request}
+
+TchuEvent.set_context_helper(create_django_context)
+
+# 4. ONE LINE to set up everything! 🎉
+setup_celery_queue(
+    app,
+    queue_name="my_queue",
+    subscriber_modules=[
+        "app1.subscribers",
+        "app2.subscribers",
+        "app3.subscribers",
+    ],
+)
+```
+
+**That's it!** This automatically:
+- ✅ Imports all subscriber modules after Django is ready
+- ✅ Collects all routing keys from `@subscribe` decorators
+- ✅ Creates queue bindings to the `tchu_events` exchange
+- ✅ Configures Celery queues and task routes
+- ✅ Sets up cross-service RPC messaging
+- ✅ Creates the dispatcher task
+
+**Settings needed in Django:**
+```python
+# settings/base.py
+INSTALLED_APPS = [
+    # ... other apps ...
+    "myapp.apps.MyAppConfig",  # Use explicit AppConfig path
+]
+
+# Make sure you have explicit AppConfig paths for your main apps
+# This avoids "Apps aren't loaded yet" errors
+```
+
+### Generic Celery Setup (Non-Django)
+
+For non-Django apps, or if you prefer manual configuration:
 
 ```python
 # myapp/celery.py
@@ -121,8 +186,7 @@ from tchu_tchu.events import TchuEvent
 
 app = Celery('myapp')
 
-# ===== Configure context helper (for framework integration) =====
-# Optional but recommended if you're using TchuEvent with request_context
+# Configure context helper (optional)
 def my_context_helper(event_data):
     """Reconstruct request context from event data."""
     from types import SimpleNamespace
@@ -135,10 +199,10 @@ def my_context_helper(event_data):
 
 TchuEvent.set_context_helper(my_context_helper)
 
-# ===== Import subscribers FIRST so @subscribe decorators run =====
+# Import subscribers FIRST so @subscribe decorators run
 app.autodiscover_tasks(['myapp.subscribers'])
 
-# ===== Auto-configure queue bindings from subscribed routing keys =====
+# Auto-configure queue bindings from subscribed routing keys
 tchu_exchange = Exchange('tchu_events', type='topic', durable=True)
 
 # ✅ IMPORTANT: Pass celery_app to force immediate handler registration
@@ -152,11 +216,10 @@ all_bindings = [
 
 # Configure queues
 app.conf.task_queues = (
-    # Main queue - auto-configured from your handlers!
     Queue(
         'myapp_queue',
         exchange=tchu_exchange,
-        bindings=all_bindings,  # ✅ Auto-generated from your @subscribe decorators!
+        bindings=all_bindings,
         durable=True,
         auto_delete=False,
     ),
@@ -174,7 +237,7 @@ dispatcher = create_topic_dispatcher(app)
 **Key Points:**
 - ✅ **Always pass `celery_app=app`** to `get_subscribed_routing_keys()` - this ensures handlers are registered before queue configuration
 - ✅ Queue bindings are **automatically generated** from your `@subscribe` decorators
-- ✅ Both broadcast events and RPC calls can use the same queue (or separate them if you want different priorities)
+- ✅ Both broadcast events and RPC calls can use the same queue
 
 ### 2. Subscribe to Events
 
@@ -920,6 +983,57 @@ all_routing_keys = get_subscribed_routing_keys(
 
 **Important:** Without `celery_app`, handlers may not be registered yet (due to lazy `autodiscover_tasks()`), resulting in an empty list and incorrect queue bindings.
 
+### setup_celery_queue()
+
+**🆕 v2.2.12+** - Django helper that simplifies Celery configuration:
+
+```python
+from tchu_tchu import setup_celery_queue
+
+setup_celery_queue(
+    celery_app,
+    queue_name,
+    subscriber_modules,
+    exchange_name='tchu_events',
+    exchange_type='topic',
+    durable=True,
+    auto_delete=False
+)
+```
+
+**Parameters:**
+- `celery_app` - Celery app instance
+- `queue_name` - Name of the queue (e.g., "my_app_queue")
+- `subscriber_modules` - List of module paths containing `@subscribe` decorators (e.g., `["app1.subscribers", "app2.subscribers"]`)
+- `exchange_name` - RabbitMQ exchange name (default: "tchu_events")
+- `exchange_type` - Exchange type (default: "topic")
+- `durable` - Whether queue is durable (default: True)
+- `auto_delete` - Whether queue auto-deletes (default: False)
+
+**What it does:**
+1. Imports all subscriber modules after Django is ready (avoids `AppRegistryNotReady` errors)
+2. Collects all routing keys from registered handlers
+3. Creates queue bindings to the exchange
+4. Configures Celery queues and task routes
+5. Sets up cross-service RPC messaging with proper exchange config
+6. Creates the dispatcher task
+
+**Example:**
+```python
+# myapp/celery.py
+import django
+django.setup()
+
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+setup_celery_queue(
+    app,
+    queue_name="my_queue",
+    subscriber_modules=["app1.subscribers", "app2.subscribers"],
+)
+```
+
 ### create_topic_dispatcher()
 
 ```python
@@ -933,6 +1047,8 @@ dispatcher = create_topic_dispatcher(
 ```
 
 Creates a Celery task that dispatches incoming events to local handlers. Call this in your `celery.py` after configuring queues.
+
+**Note:** If using `setup_celery_queue()`, you don't need to call this manually - it's handled automatically.
 
 ## Migration from v1.x
 
@@ -1105,7 +1221,39 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 For detailed version history, see [CHANGELOG.md](./CHANGELOG.md).
 
-### v2.2.11 (2025-10-28) - Current
+### v2.2.12 (2025-11-04) - Current
+
+**🚀 New: Simplified Django Integration**
+
+**Added:**
+- **NEW**: `setup_celery_queue()` helper function for one-line Django + Celery setup
+- Eliminates ~60 lines of boilerplate per app
+- Handles subscriber imports, queue configuration, and dispatcher creation automatically
+- Properly handles Django initialization timing to avoid `AppRegistryNotReady` errors
+- Sets up cross-service RPC messaging with correct exchange configuration
+
+**Example:**
+```python
+# Before (60+ lines)
+import importlib
+from kombu import Exchange, Queue, binding
+# ... lots of configuration code ...
+
+# After (1 function call!)
+from tchu_tchu import setup_celery_queue
+
+setup_celery_queue(
+    app,
+    queue_name="my_queue",
+    subscriber_modules=["app1.subscribers", "app2.subscribers"],
+)
+```
+
+**Migration:** Optional - existing configurations still work. See Quick Start for new pattern.
+
+---
+
+### v2.2.11 (2025-10-28)
 
 **🚨 Critical Fix: Broadcast Events Now Work**
 
