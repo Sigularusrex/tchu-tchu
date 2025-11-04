@@ -96,7 +96,7 @@ def setup_celery_queue(
                 or "Apps aren't loaded yet" in exception_str
             ):
                 logger.info(
-                    f"⏳ Skipping remaining imports - Django not ready (will import on worker init)"
+                    "⏳ Skipping remaining imports - Django not ready (will import on worker init)"
                 )
                 break  # Skip remaining modules
             else:
@@ -141,6 +141,16 @@ def setup_celery_queue(
     celery_app.conf.task_default_exchange = exchange_name
     celery_app.conf.task_default_exchange_type = exchange_type
     celery_app.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+
+    # Configure for reliable RPC handling
+    # Prefetch multiplier of 1 ensures workers only take one task at a time
+    # This prevents race conditions when multiple workers handle the same queue
+    celery_app.conf.worker_prefetch_multiplier = 1
+
+    # Enable task tracking and late acknowledgment for RPC reliability
+    celery_app.conf.task_track_started = True
+    celery_app.conf.task_acks_late = True
+    celery_app.conf.task_reject_on_worker_lost = True
 
     logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
 

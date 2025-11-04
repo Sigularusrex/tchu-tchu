@@ -117,10 +117,21 @@ def create_topic_dispatcher(
     """
     registry = get_registry()
 
-    @celery_app.task(name=task_name, bind=True)
+    @celery_app.task(
+        name=task_name,
+        bind=True,
+        track_started=True,
+        acks_late=True,
+        reject_on_worker_lost=True,
+    )
     def dispatch_event(self, message_body: str, routing_key: Optional[str] = None):
         """
         Dispatcher task that routes messages to local handlers.
+
+        Configuration:
+        - track_started=True: Track when task starts processing (important for RPC)
+        - acks_late=True: Acknowledge task only after completion (prevents lost results)
+        - reject_on_worker_lost=True: Requeue task if worker dies mid-processing
 
         Args:
             message_body: Serialized message body

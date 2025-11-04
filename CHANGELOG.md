@@ -5,6 +5,27 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.21] - 2025-11-04
+
+### Fixed
+- **CRITICAL**: Fixed intermittent RPC call failures due to race conditions with multiple workers
+  - Added `track_started=True` to dispatcher task to properly track task execution state
+  - Added `acks_late=True` to ensure tasks are only acknowledged after completion (prevents lost results)
+  - Added `reject_on_worker_lost=True` to requeue tasks if worker dies during processing
+  - Set `worker_prefetch_multiplier=1` in `setup_celery_queue()` to prevent workers from prefetching multiple RPC tasks
+  - These changes ensure reliable RPC result delivery even with multiple Celery workers
+
+### Changed
+- `dispatch_event` task now properly configured for RPC reliability with late acknowledgment and task tracking
+- `setup_celery_queue()` now automatically configures Celery for reliable RPC handling
+- No migration required - just update tchu-tchu and restart services
+
+### Root Cause
+- Multiple Celery workers consuming from the same queue could create race conditions
+- Default Celery prefetching allowed workers to grab multiple tasks before processing
+- Tasks were acknowledged before completion, risking result loss on worker failure
+- This caused intermittent failures where some RPC calls succeeded and others failed
+
 ## [2.2.20] - 2025-11-04
 
 ### Fixed
