@@ -4,6 +4,7 @@ import importlib
 from typing import List
 
 from kombu import Exchange, Queue, binding
+from celery.signals import worker_process_init
 
 from tchu_tchu.subscriber import get_subscribed_routing_keys, create_topic_dispatcher
 from tchu_tchu.logging.handlers import get_logger
@@ -60,14 +61,13 @@ def setup_celery_queue(
     """
     logger.info(f"📞 setup_celery_queue() called for queue: {queue_name}")
 
-    @celery_app.on_after_finalize.connect
-    def _setup_tchu_queue(sender, **kwargs):
-        """Configure tchu-tchu queue bindings after Celery is fully finalized."""
-
-        # Import subscriber modules NOW (after Django is ready)
-        # This ensures @subscribe decorators execute and register handlers
+    # Register a worker_process_init signal handler to import modules when worker starts
+    # This ensures Django is fully ready before importing subscriber modules
+    @worker_process_init.connect
+    def _import_subscribers_on_worker_init(sender=None, **kwargs):
+        """Import subscriber modules when worker process initializes (Django is ready)."""
         logger.info("=" * 80)
-        logger.info(f"🚀 TCHU-TCHU SETUP: {queue_name}")
+        logger.info(f"🚀 TCHU-TCHU WORKER INIT: {queue_name}")
         logger.info("=" * 80)
 
         for module in subscriber_modules:
@@ -76,56 +76,68 @@ def setup_celery_queue(
                 importlib.import_module(module)
             except Exception as e:
                 logger.error(f"❌ Failed to import {module}: {e}", exc_info=True)
-                raise
 
-        # Collect all routing keys from registered handlers
         from tchu_tchu.registry import get_registry
 
         registry = get_registry()
-        all_routing_keys = get_subscribed_routing_keys()
-
         logger.info(f"📊 Total handlers registered: {registry.get_handler_count()}")
-        logger.info(f"🔑 Total unique routing keys: {len(all_routing_keys)}")
-        if all_routing_keys:
-            logger.info(f"🔑 Sample routing keys: {sorted(all_routing_keys)[:10]}...")
         logger.info("=" * 80)
 
-        # Create topic exchange
-        tchu_exchange = Exchange(exchange_name, type=exchange_type, durable=durable)
+    # Try to import modules NOW to get routing keys for queue configuration
+    # If Django isn't ready, skip and let worker_process_init handle it
+    for module in subscriber_modules:
+        try:
+            importlib.import_module(module)
+        except Exception as e:
+            # Check if it's a Django not ready error (check exception type and message)
+            exception_str = str(type(e).__name__) + " " + str(e)
+            if "AppRegistryNotReady" in exception_str or "Apps aren't loaded yet" in exception_str:
+                logger.info(f"⏳ Skipping remaining imports - Django not ready (will import on worker init)")
+                break  # Skip remaining modules
+            else:
+                logger.warning(f"⚠️  Could not import {module}: {e}")
 
-        # Build bindings for each routing key
-        all_bindings = [
-            binding(tchu_exchange, routing_key=key) for key in all_routing_keys
-        ]
+    # Collect all routing keys from registered handlers
+    from tchu_tchu.registry import get_registry
 
-        # FORCEFULLY override queue config (even if Django settings defined one)
-        sender.conf.task_queues = (
-            Queue(
-                queue_name,
-                exchange=tchu_exchange,
-                bindings=all_bindings,
-                durable=durable,
-                auto_delete=auto_delete,
-            ),
-        )
+    registry = get_registry()
+    all_routing_keys = get_subscribed_routing_keys()
 
-        # Route dispatcher task to this queue
-        sender.conf.task_routes = {
-            "tchu_tchu.dispatch_event": {
-                "queue": queue_name,
-                "exchange": exchange_name,
-                "routing_key": "tchu_tchu.dispatch_event",
-            },
-        }
+    logger.info(f"📊 Handlers registered during setup: {registry.get_handler_count()}")
+    logger.info(f"🔑 Routing keys for queue bindings: {len(all_routing_keys)}")
 
-        # Set default exchange for cross-service messaging
-        sender.conf.task_default_exchange = exchange_name
-        sender.conf.task_default_exchange_type = exchange_type
-        sender.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+    # Create topic exchange
+    tchu_exchange = Exchange(exchange_name, type=exchange_type, durable=durable)
 
-        logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
+    # Build bindings for each routing key
+    all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
 
-    logger.info(f"📌 Registered on_after_finalize callback for queue: {queue_name}")
+    # FORCEFULLY override queue config (even if Django settings defined one)
+    celery_app.conf.task_queues = (
+        Queue(
+            queue_name,
+            exchange=tchu_exchange,
+            bindings=all_bindings,
+            durable=durable,
+            auto_delete=auto_delete,
+        ),
+    )
+
+    # Route dispatcher task to this queue
+    celery_app.conf.task_routes = {
+        "tchu_tchu.dispatch_event": {
+            "queue": queue_name,
+            "exchange": exchange_name,
+            "routing_key": "tchu_tchu.dispatch_event",
+        },
+    }
+
+    # Set default exchange for cross-service messaging
+    celery_app.conf.task_default_exchange = exchange_name
+    celery_app.conf.task_default_exchange_type = exchange_type
+    celery_app.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+
+    logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
 
     # Create the dispatcher task (registers tchu_tchu.dispatch_event)
     create_topic_dispatcher(celery_app)
