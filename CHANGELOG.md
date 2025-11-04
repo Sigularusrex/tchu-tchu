@@ -5,6 +5,18 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.24] - 2025-11-04
+
+### Fixed
+- **CRITICAL**: Fixed `@celery.shared_task` tasks not being routed to any queue
+  - Added `task_default_queue` setting to route all tasks (including regular Celery tasks) to tchu-tchu queue
+  - Ensures `.delay()` and `@shared_task` work properly alongside `@subscribe` handlers
+  - Previously, only tchu-tchu dispatcher tasks were routed, leaving regular tasks orphaned
+
+### Changed
+- `setup_celery_queue()` now sets `task_default_queue` to ensure all tasks go to the configured queue
+- Both event-driven handlers (@subscribe) and async tasks (@shared_task) now work together
+
 ## [2.2.23] - 2025-11-04
 
 ### Changed

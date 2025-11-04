@@ -137,6 +137,10 @@ def setup_celery_queue(
         },
     }
 
+    # Set default queue for all tasks (including @celery.shared_task)
+    # This ensures regular Celery tasks also go to the tchu-tchu queue
+    celery_app.conf.task_default_queue = queue_name
+    
     # Set default exchange for cross-service messaging
     celery_app.conf.task_default_exchange = exchange_name
     celery_app.conf.task_default_exchange_type = exchange_type
