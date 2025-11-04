@@ -37,11 +37,8 @@ def setup_celery_queue(
         django.setup()
 
         app = Celery("my_app")
-
-        # Load Django settings FIRST
         app.config_from_object("django.conf:settings", namespace="CELERY")
 
-        # THEN call setup_celery_queue (will override Django queue config)
         from tchu_tchu.django import setup_celery_queue
         setup_celery_queue(
             app,
@@ -63,64 +60,73 @@ def setup_celery_queue(
     """
     logger.info(f"📞 setup_celery_queue() called for queue: {queue_name}")
 
-    # Import subscriber modules NOW (after Django is ready)
-    # This ensures @subscribe decorators execute and register handlers
-    logger.info("=" * 80)
-    logger.info(f"🚀 TCHU-TCHU SETUP: {queue_name}")
-    logger.info("=" * 80)
+    @celery_app.on_after_configure.connect
+    def _setup_tchu_queue(sender, **kwargs):
+        """Configure tchu-tchu queue bindings after Celery is configured."""
 
-    for module in subscriber_modules:
-        logger.info(f"📦 Importing subscriber module: {module}")
-        try:
-            importlib.import_module(module)
-        except Exception as e:
-            logger.error(f"❌ Failed to import {module}: {e}", exc_info=True)
-            raise
+        # Import subscriber modules NOW (after Django is ready)
+        # This ensures @subscribe decorators execute and register handlers
+        logger.info("=" * 80)
+        logger.info(f"🚀 TCHU-TCHU SETUP: {queue_name}")
+        logger.info("=" * 80)
 
-    # Collect all routing keys from registered handlers
-    from tchu_tchu.registry import get_registry
+        for module in subscriber_modules:
+            logger.info(f"📦 Importing subscriber module: {module}")
+            try:
+                importlib.import_module(module)
+            except Exception as e:
+                logger.error(f"❌ Failed to import {module}: {e}", exc_info=True)
+                raise
 
-    registry = get_registry()
-    all_routing_keys = get_subscribed_routing_keys()
+        # Collect all routing keys from registered handlers
+        from tchu_tchu.registry import get_registry
 
-    logger.info(f"📊 Total handlers registered: {registry.get_handler_count()}")
-    logger.info(f"🔑 Total unique routing keys: {len(all_routing_keys)}")
-    if all_routing_keys:
-        logger.info(f"🔑 Sample routing keys: {sorted(all_routing_keys)[:10]}...")
-    logger.info("=" * 80)
+        registry = get_registry()
+        all_routing_keys = get_subscribed_routing_keys()
 
-    # Create topic exchange
-    tchu_exchange = Exchange(exchange_name, type=exchange_type, durable=durable)
+        logger.info(f"📊 Total handlers registered: {registry.get_handler_count()}")
+        logger.info(f"🔑 Total unique routing keys: {len(all_routing_keys)}")
+        if all_routing_keys:
+            logger.info(f"🔑 Sample routing keys: {sorted(all_routing_keys)[:10]}...")
+        logger.info("=" * 80)
 
-    # Build bindings for each routing key
-    all_bindings = [binding(tchu_exchange, routing_key=key) for key in all_routing_keys]
+        # Create topic exchange
+        tchu_exchange = Exchange(exchange_name, type=exchange_type, durable=durable)
 
-    # Configure queue IMMEDIATELY (before config_from_object)
-    celery_app.conf.task_queues = (
-        Queue(
-            queue_name,
-            exchange=tchu_exchange,
-            bindings=all_bindings,
-            durable=durable,
-            auto_delete=auto_delete,
-        ),
-    )
+        # Build bindings for each routing key
+        all_bindings = [
+            binding(tchu_exchange, routing_key=key) for key in all_routing_keys
+        ]
 
-    # Route dispatcher task to this queue
-    celery_app.conf.task_routes = {
-        "tchu_tchu.dispatch_event": {
-            "queue": queue_name,
-            "exchange": exchange_name,
-            "routing_key": "tchu_tchu.dispatch_event",
-        },
-    }
+        # FORCEFULLY override queue config (even if Django settings defined one)
+        sender.conf.task_queues = (
+            Queue(
+                queue_name,
+                exchange=tchu_exchange,
+                bindings=all_bindings,
+                durable=durable,
+                auto_delete=auto_delete,
+            ),
+        )
 
-    # Set default exchange for cross-service messaging
-    celery_app.conf.task_default_exchange = exchange_name
-    celery_app.conf.task_default_exchange_type = exchange_type
-    celery_app.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+        # Route dispatcher task to this queue
+        sender.conf.task_routes = {
+            "tchu_tchu.dispatch_event": {
+                "queue": queue_name,
+                "exchange": exchange_name,
+                "routing_key": "tchu_tchu.dispatch_event",
+            },
+        }
+
+        # Set default exchange for cross-service messaging
+        sender.conf.task_default_exchange = exchange_name
+        sender.conf.task_default_exchange_type = exchange_type
+        sender.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+
+        logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
+
+    logger.info(f"📌 Registered on_after_configure callback for queue: {queue_name}")
 
     # Create the dispatcher task (registers tchu_tchu.dispatch_event)
     create_topic_dispatcher(celery_app)
-
-    logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
+    logger.info(f"✅ setup_celery_queue() completed for queue: {queue_name}")
