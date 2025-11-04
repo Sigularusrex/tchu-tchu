@@ -91,8 +91,13 @@ def setup_celery_queue(
         except Exception as e:
             # Check if it's a Django not ready error (check exception type and message)
             exception_str = str(type(e).__name__) + " " + str(e)
-            if "AppRegistryNotReady" in exception_str or "Apps aren't loaded yet" in exception_str:
-                logger.info(f"⏳ Skipping remaining imports - Django not ready (will import on worker init)")
+            if (
+                "AppRegistryNotReady" in exception_str
+                or "Apps aren't loaded yet" in exception_str
+            ):
+                logger.info(
+                    f"⏳ Skipping remaining imports - Django not ready (will import on worker init)"
+                )
                 break  # Skip remaining modules
             else:
                 logger.warning(f"⚠️  Could not import {module}: {e}")
