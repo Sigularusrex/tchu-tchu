@@ -145,12 +145,9 @@ def setup_celery_queue(
     # Configure for reliable RPC handling
     # Prefetch multiplier of 1 ensures workers only take one task at a time
     # This prevents race conditions when multiple workers handle the same queue
+    # This is the KEY setting that fixes intermittent RPC failures with multiple workers
     celery_app.conf.worker_prefetch_multiplier = 1
-
-    # Enable task tracking and late acknowledgment for RPC reliability
-    celery_app.conf.task_track_started = True
-    celery_app.conf.task_acks_late = True
-    celery_app.conf.task_reject_on_worker_lost = True
+    logger.info(f"🔧 Set worker_prefetch_multiplier=1 for RPC reliability")
 
     logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
 
