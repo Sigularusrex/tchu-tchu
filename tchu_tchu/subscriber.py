@@ -117,21 +117,14 @@ def create_topic_dispatcher(
     """
     registry = get_registry()
 
-    @celery_app.task(
-        name=task_name,
-        bind=True,
-        track_started=True,
-        acks_late=True,
-        reject_on_worker_lost=True,
-    )
+    @celery_app.task(name=task_name, bind=True)
     def dispatch_event(self, message_body: str, routing_key: Optional[str] = None):
         """
         Dispatcher task that routes messages to local handlers.
 
-        Configuration:
-        - track_started=True: Track when task starts processing (important for RPC)
-        - acks_late=True: Acknowledge task only after completion (prevents lost results)
-        - reject_on_worker_lost=True: Requeue task if worker dies mid-processing
+        Note: Task configuration (acks_late, track_started, etc.) should be set
+        at the Celery app level in celery.py, not here, for compatibility with
+        different result backends (rpc://, redis://, etc.)
 
         Args:
             message_body: Serialized message body

@@ -5,6 +5,19 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.25] - 2025-11-04
+
+### Fixed
+- **CRITICAL**: Fixed `@celery.shared_task` tasks broadcasting to all services
+  - Removed `task_default_exchange` setting that was causing regular tasks to use broadcast exchange
+  - Regular @celery.shared_task tasks now use direct routing to service's own queue
+  - Only tchu-tchu event dispatcher uses the broadcast topic exchange
+  - Prevents tasks from one service being sent to workers of other services
+
+### Changed
+- `setup_celery_queue()` now only sets `task_default_queue` without changing default exchange
+- Regular Celery tasks stay within their service, broadcast events go to all services
+
 ## [2.2.24] - 2025-11-04
 
 ### Fixed

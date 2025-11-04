@@ -138,13 +138,12 @@ def setup_celery_queue(
     }
 
     # Set default queue for all tasks (including @celery.shared_task)
-    # This ensures regular Celery tasks also go to the tchu-tchu queue
+    # This ensures regular Celery tasks also go to the service's queue
     celery_app.conf.task_default_queue = queue_name
     
-    # Set default exchange for cross-service messaging
-    celery_app.conf.task_default_exchange = exchange_name
-    celery_app.conf.task_default_exchange_type = exchange_type
-    celery_app.conf.task_default_routing_key = "tchu_tchu.dispatch_event"
+    # DON'T set task_default_exchange - let regular tasks use direct routing
+    # Only tchu-tchu dispatcher events should use the topic exchange
+    # Regular @celery.shared_task tasks will use default direct routing to the queue
 
     # Configure for reliable RPC handling
     # Prefetch multiplier of 1 ensures workers only take one task at a time
