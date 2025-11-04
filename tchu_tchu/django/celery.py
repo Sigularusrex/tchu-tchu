@@ -60,9 +60,9 @@ def setup_celery_queue(
     """
     logger.info(f"📞 setup_celery_queue() called for queue: {queue_name}")
 
-    @celery_app.on_after_configure.connect
+    @celery_app.on_after_finalize.connect
     def _setup_tchu_queue(sender, **kwargs):
-        """Configure tchu-tchu queue bindings after Celery is configured."""
+        """Configure tchu-tchu queue bindings after Celery is fully finalized."""
 
         # Import subscriber modules NOW (after Django is ready)
         # This ensures @subscribe decorators execute and register handlers
@@ -125,7 +125,7 @@ def setup_celery_queue(
 
         logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
 
-    logger.info(f"📌 Registered on_after_configure callback for queue: {queue_name}")
+    logger.info(f"📌 Registered on_after_finalize callback for queue: {queue_name}")
 
     # Create the dispatcher task (registers tchu_tchu.dispatch_event)
     create_topic_dispatcher(celery_app)
