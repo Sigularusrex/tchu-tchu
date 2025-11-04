@@ -5,7 +5,7 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
-> **🚀 v2.2.12 Released** - Simplified Django integration! One-line setup replaces 60+ lines of boilerplate.  
+> **🚀 v2.2.13 Released** - Simplified Django integration! One-line setup replaces 60+ lines of boilerplate.  
 > **[See Quick Start →](#django--celery-simplified-setup)**
 >
 > **📢 v2.2.11 Critical Fix** - If you're on v2.2.9, broadcast events may be silently failing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
