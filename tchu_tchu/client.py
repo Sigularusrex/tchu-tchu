@@ -1,6 +1,6 @@
 """TchuClient - Drop-in replacement for the original tchu client."""
 
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Union, Optional, List
 
 from tchu_tchu.producer import CeleryProducer
 from tchu_tchu.logging.handlers import get_logger
@@ -58,6 +58,34 @@ class TchuClient:
             Response from the handler
         """
         return self.producer.call(
+            routing_key=topic, body=data, timeout=timeout, **kwargs
+        )
+
+    def call_all(
+        self, topic: str, data: Union[Dict[str, Any], Any], timeout: int = 30, **kwargs
+    ) -> List[Any]:
+        """
+        Send a message and collect all responses from multiple handlers (fan-out/gather).
+
+        Unlike call() which returns the first non-None result, this method collects
+        ALL non-None results from all handlers. Useful for aggregating data from
+        multiple sources or services.
+
+        Args:
+            topic: Topic name to send to
+            data: Message data to send
+            timeout: Timeout in seconds to wait for responses
+            **kwargs: Additional arguments passed to the producer
+
+        Returns:
+            List of all non-None responses from handlers
+
+        Example:
+            # Query multiple databases
+            results = client.call_all('query.all.databases', {'query': 'SELECT ...'})
+            # Returns: [{"db1": [...]}, {"db2": [...]}, {"db3": [...]}]
+        """
+        return self.producer.call_all(
             routing_key=topic, body=data, timeout=timeout, **kwargs
         )
 

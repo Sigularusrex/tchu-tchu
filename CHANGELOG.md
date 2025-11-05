@@ -5,6 +5,36 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **NEW**: `call_all()` method for fan-out/gather pattern
+  - Collects responses from ALL handlers instead of just the first
+  - Returns list of all non-None results
+  - Useful for aggregating data from multiple services/databases
+  - Handler errors logged but don't stop other handlers from responding
+  - Available on both `TchuClient` and `CeleryProducer`
+- **NEW**: RPC handlers can return `None` to "pass" to the next handler
+  - When multiple handlers subscribe to the same RPC routing key, handlers can return `None` to skip
+  - First handler that returns a non-None value wins
+  - Enables conditional response patterns (e.g., premium vs standard handlers)
+  - If all handlers return `None`, caller receives `None` with a warning
+
+### Changed
+- RPC call result extraction now skips `None` results and finds first non-None response
+- Debug logging added to show which handler responded for RPC calls
+- Fan-out/gather pattern supported alongside traditional RPC point-to-point
+
+### Examples
+```python
+# call() - Returns first non-None result
+result = client.call('rpc.get.data', {'id': 123})
+
+# call_all() - Returns list of all non-None results
+results = client.call_all('rpc.query.databases', {'sql': 'SELECT ...'})
+# Returns: [{"db1": [...]}, {"db2": [...]}, {"db3": [...]}]
+```
+
 ## [2.2.26] - 2025-11-05
 
 ### Added
