@@ -5,6 +5,48 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.26] - 2025-11-05
+
+### Added
+- **NEW**: Extended `Celery` class that wraps standard `celery.Celery` with tchu-tchu integration
+  - Import with `from tchu_tchu.django import Celery` for seamless Django integration
+  - Provides `app.message_broker()` method for cleaner, more Pythonic API
+  - **Parameter naming**: Uses `include` parameter (matches Celery's naming convention)
+  - **Auto-discovery**: `include` parameter is optional
+    - If not provided to `message_broker()`, uses Celery's `include` constructor parameter
+    - No automatic path modifications - full module paths required
+    - Example: `Celery("app", include=["app1.subscribers", "app2.subscribers"])`
+  - Stores `include` from kwargs in `self.tchu_include` for easy access
+  - Fully backward compatible - all standard Celery functionality preserved
+  - More intuitive than standalone function approach
+- Added comprehensive documentation in `EXTENDED_CELERY_USAGE.md`
+- Updated `tchu_tchu.django.__init__.py` to export the extended `Celery` class
+
+### Changed
+- `message_broker()` method wraps `setup_celery_queue()` for better encapsulation
+- Uses `include` parameter name to match Celery's API (not `subscriber_modules`)
+- `include` parameter is optional - defaults to Celery's `include` from constructor
+- README updated to show extended Celery class as the recommended approach
+- Standalone `setup_celery_queue()` function remains available for backward compatibility
+
+### Examples
+```python
+from tchu_tchu.django import Celery  # Extended class
+
+# With explicit include modules
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+app.message_broker(
+    queue_name="my_queue",
+    include=["app1.subscribers", "app2.subscribers"],
+)
+
+# With auto-discovery from Celery's include parameter
+app = Celery("my_app", include=["app1.subscribers", "app2.subscribers"])
+app.config_from_object("django.conf:settings", namespace="CELERY")
+app.message_broker(queue_name="my_queue")  # Uses app1.subscribers, app2.subscribers
+```
+
 ## [2.2.25] - 2025-11-04
 
 ### Fixed

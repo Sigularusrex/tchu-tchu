@@ -1,8 +1,91 @@
 # Celery Configuration Template for tchu-tchu
 
-## Recommended Pattern: Manual Imports
+## Recommended Pattern: Extended Celery Class (v2.2.26+)
 
-This pattern works reliably in **all environments** (local, production, GCP).
+This is the simplest and most Pythonic approach for Django projects:
+
+```python
+# your_service/celery.py
+import os
+import django
+
+from tchu_tchu.django import Celery  # Extended Celery from tchu-tchu
+from tchu_tchu.events import TchuEvent
+
+# 1. Initialize Django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings.production")
+django.setup()
+
+# 2. Create Celery app with tchu-tchu extensions
+app = Celery("your_service_name")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# 3. Optional: Set context helper for request reconstruction
+def create_context_helper(event_data):
+    # Your context reconstruction logic
+    return {}
+
+TchuEvent.set_context_helper(create_context_helper)
+
+# 4. Configure message broker - ONE METHOD CALL! 🎉
+app.message_broker(
+    queue_name="your_service_queue",  # Replace with unique queue name
+    include=[
+        "your_service.subscribers.example_subscriber",
+        "your_service.subscribers.user_subscriber",
+        # Add more subscriber modules as needed
+    ],
+)
+```
+
+**That's it!** This automatically:
+- ✅ Imports all subscriber modules after Django is ready
+- ✅ Collects all routing keys from `@subscribe` decorators
+- ✅ Creates queue bindings to the `tchu_events` exchange
+- ✅ Configures Celery queues and task routes
+- ✅ Sets up cross-service RPC messaging
+- ✅ Creates the dispatcher task
+
+See [EXTENDED_CELERY_USAGE.md](./EXTENDED_CELERY_USAGE.md) for complete documentation.
+
+---
+
+## Alternative Pattern: setup_celery_queue() Function
+
+Use the standalone function if you prefer or need more control:
+
+```python
+# your_service/celery.py
+import os
+import django
+
+from celery import Celery  # Standard Celery
+from tchu_tchu.django import setup_celery_queue
+
+# 1. Initialize Django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings.production")
+django.setup()
+
+# 2. Create Celery app
+app = Celery("your_service_name")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# 3. Set up tchu-tchu queue
+setup_celery_queue(
+    app,
+    queue_name="your_service_queue",
+    subscriber_modules=[
+        "your_service.subscribers.example_subscriber",
+        "your_service.subscribers.user_subscriber",
+    ],
+)
+```
+
+---
+
+## Manual Configuration Pattern (Non-Django or Advanced Use)
+
+This pattern works reliably in **all environments** when you need full control:
 
 ```python
 # your_service/celery.py
@@ -155,28 +238,33 @@ app.conf.task_routes = {
 dispatcher = create_topic_dispatcher(app)
 ```
 
-## Why Manual Imports?
+## Pattern Comparison
 
-### ✅ Advantages
-- Works in local development (Django runserver)
-- Works in production (GCP, Kubernetes, Cloud Run)
-- No timing issues with `autodiscover_tasks()`
-- No conflicts with Django auto-reload
-- More explicit - you can see what's imported
-- Easier to debug
-- No "No handlers found" errors
+| Approach | Ease of Use | Django Support | Maintenance | Best For |
+|----------|-------------|----------------|-------------|----------|
+| **Extended Celery class** | ⭐⭐⭐⭐⭐ | ✅ Yes | ✅ Auto | Django projects |
+| **setup_celery_queue()** | ⭐⭐⭐⭐ | ✅ Yes | ✅ Auto | Django projects |
+| **Manual imports** | ⭐⭐⭐ | ✅ Yes | ⚠️ Manual | Advanced/non-Django |
 
-### ❌ Disadvantages
-- Requires manual maintenance when adding new subscriber files
-- A few extra lines of code
+### Extended Celery Class (Recommended)
+✅ Cleanest API  
+✅ Method-based configuration  
+✅ All Celery features preserved  
+✅ Auto-handles Django initialization  
+✅ Auto-imports subscriber modules  
 
-### Comparison with Other Approaches
+### setup_celery_queue() Function
+✅ Simple function call  
+✅ Auto-handles Django initialization  
+✅ Auto-imports subscriber modules  
+✅ Works with standard Celery class  
 
-| Approach | Local Dev | Production | Explicit | Maintenance |
-|----------|-----------|------------|----------|-------------|
-| **Manual imports** | ✅ Works | ✅ Works | ✅ Yes | ⚠️ Manual |
-| `celery_app=app` | ❌ May fail | ✅ Works | ⚠️ Hidden | ✅ Auto |
-| `autodiscover_tasks()` only | ❌ Fails | ❌ Fails | ⚠️ Hidden | ✅ Auto |
+### Manual Configuration
+✅ Maximum control  
+✅ Works in all environments  
+✅ No hidden magic  
+⚠️ Requires manual module imports  
+⚠️ More boilerplate code
 
 ## Troubleshooting
 

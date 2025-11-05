@@ -5,7 +5,7 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
-> **🚀 v2.2.13 Released** - Simplified Django integration! One-line setup replaces 60+ lines of boilerplate.  
+> **🚀 v2.2.26 Released** - Extended Celery class with cleaner API! Import `Celery` from tchu-tchu for seamless integration.  
 > **[See Quick Start →](#django--celery-simplified-setup)**
 >
 > **📢 v2.2.11 Critical Fix** - If you're on v2.2.9, broadcast events may be silently failing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
@@ -110,22 +110,21 @@ pip install tchu-tchu
 
 ### Django + Celery (Simplified Setup)
 
-**🚀 tchu-tchu v2.2.12+ includes a one-line Django helper** that handles all the boilerplate:
+**🚀 tchu-tchu v2.2.26+ provides an extended `Celery` class** for the cleanest API:
 
 ```python
 # myapp/celery.py
 import os
 import django
 
-from celery import Celery
-from tchu_tchu import setup_celery_queue
+from tchu_tchu.django import Celery  # Import extended Celery from tchu-tchu
 from tchu_tchu.events import TchuEvent
 
 # 1. Initialize Django
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "settings.production")
 django.setup()
 
-# 2. Create Celery app
+# 2. Create Celery app (with tchu-tchu extensions)
 app = Celery("my_app")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 
@@ -141,11 +140,10 @@ def create_django_context(event_data):
 
 TchuEvent.set_context_helper(create_django_context)
 
-# 4. ONE LINE to set up everything! 🎉
-setup_celery_queue(
-    app,
+# 4. Configure message broker in one method call! 🎉
+app.message_broker(
     queue_name="my_queue",
-    subscriber_modules=[
+    include=[
         "app1.subscribers",
         "app2.subscribers",
         "app3.subscribers",
@@ -161,6 +159,33 @@ setup_celery_queue(
 - ✅ Sets up cross-service RPC messaging
 - ✅ Creates the dispatcher task
 
+**Auto-Discovery:** You can also omit `include` to use Celery's `include` parameter:
+```python
+from tchu_tchu.django import Celery
+
+# Specify full module paths in Celery's 'include'
+app = Celery("my_app", include=["app1.subscribers", "app2.subscribers", "app3.subscribers"])
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# Uses modules from Celery's include parameter
+app.message_broker(queue_name="my_queue")
+```
+
+**Alternative:** You can still use the standalone `setup_celery_queue()` function:
+```python
+from celery import Celery  # Standard Celery
+from tchu_tchu.django import setup_celery_queue
+
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+setup_celery_queue(
+    app,
+    queue_name="my_queue",
+    subscriber_modules=["app1.subscribers", "app2.subscribers"],
+)
+```
+
 **Settings needed in Django:**
 ```python
 # settings/base.py
@@ -172,6 +197,8 @@ INSTALLED_APPS = [
 # Make sure you have explicit AppConfig paths for your main apps
 # This avoids "Apps aren't loaded yet" errors
 ```
+
+**📖 For complete documentation on the extended Celery class, see [EXTENDED_CELERY_USAGE.md](./EXTENDED_CELERY_USAGE.md)**
 
 ### Generic Celery Setup (Non-Django)
 
@@ -938,6 +965,33 @@ task_queues = (
 
 ## API Reference
 
+### Extended Celery Class
+
+**🆕 v2.2.26+** - Import from tchu-tchu for extended functionality:
+
+```python
+from tchu_tchu.django import Celery
+
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# Extended method for message broker configuration
+app.message_broker(
+    queue_name="my_queue",
+    include=["app1.subscribers", "app2.subscribers"],
+    exchange_name="tchu_events",  # Optional
+    exchange_type="topic",  # Optional
+    durable=True,  # Optional
+    auto_delete=False,  # Optional
+)
+```
+
+**Methods:**
+- All standard `celery.Celery` methods (fully compatible)
+- `message_broker()` - Configure tchu-tchu message broker with subscriber modules
+
+**See [EXTENDED_CELERY_USAGE.md](./EXTENDED_CELERY_USAGE.md) for complete documentation.**
+
 ### TchuClient
 
 ```python
@@ -1221,35 +1275,32 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 For detailed version history, see [CHANGELOG.md](./CHANGELOG.md).
 
-### v2.2.12 (2025-11-04) - Current
+### v2.2.26 (2025-11-05) - Current
 
-**🚀 New: Simplified Django Integration**
+**🚀 New: Extended Celery Class**
 
 **Added:**
-- **NEW**: `setup_celery_queue()` helper function for one-line Django + Celery setup
-- Eliminates ~60 lines of boilerplate per app
-- Handles subscriber imports, queue configuration, and dispatcher creation automatically
-- Properly handles Django initialization timing to avoid `AppRegistryNotReady` errors
-- Sets up cross-service RPC messaging with correct exchange configuration
+- **NEW**: Extended `Celery` class that wraps standard Celery with tchu-tchu integration
+- Import with `from tchu_tchu.django import Celery` for seamless integration
+- New `app.message_broker()` method for cleaner configuration API
+- Fully compatible with standard Celery - all original methods preserved
+- More Pythonic and intuitive than standalone function approach
 
 **Example:**
 ```python
-# Before (60+ lines)
-import importlib
-from kombu import Exchange, Queue, binding
-# ... lots of configuration code ...
+from tchu_tchu.django import Celery  # Extended Celery class
 
-# After (1 function call!)
-from tchu_tchu import setup_celery_queue
+app = Celery("my_app")
+app.config_from_object("django.conf:settings", namespace="CELERY")
 
-setup_celery_queue(
-    app,
+# Clean method-based API
+app.message_broker(
     queue_name="my_queue",
     subscriber_modules=["app1.subscribers", "app2.subscribers"],
 )
 ```
 
-**Migration:** Optional - existing configurations still work. See Quick Start for new pattern.
+**Migration:** Optional - `setup_celery_queue()` function still available and fully supported.
 
 ---
 
