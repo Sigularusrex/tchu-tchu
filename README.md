@@ -523,9 +523,81 @@ def calculate_order_total(data):
 
 **Important Notes:**
 - RPC calls are **point-to-point** (only one worker processes the request)
-- The first handler to respond wins (if multiple handlers exist)
+- The first **non-None** handler result is returned (allows handlers to "pass")
 - Requires a result backend (Redis, database, etc.) configured in Celery
 - Use appropriate timeouts to avoid hanging requests
+
+### Multiple Handlers - Conditional Response
+
+Handlers can return `None` to "pass" and allow the next handler to respond:
+
+```python
+# Handler 1 - Only handles specific cases
+@subscribe('rpc.document.get')
+def get_premium_document(data):
+    if data.get('type') != 'premium':
+        return None  # Pass to next handler
+    return get_premium_doc(data['id'])
+
+# Handler 2 - Fallback handler
+@subscribe('rpc.document.get')
+def get_standard_document(data):
+    return get_standard_doc(data['id'])
+
+# Caller
+result = client.call('rpc.document.get', {'id': 123, 'type': 'premium'})
+# Handler 1 responds for premium, Handler 2 for others
+```
+
+**Behavior:**
+- All handlers execute in registration order
+- First handler that returns a **non-None** value wins
+- If all handlers return `None`, caller receives `None` with a warning
+
+### Collecting Multiple Responses - Fan-Out/Gather
+
+Use `call_all()` to collect responses from multiple handlers instead of just the first:
+
+```python
+# Multiple handlers for different data sources
+@subscribe('rpc.query.databases')
+def query_postgres(data):
+    return {"source": "postgres", "results": query_pg(data['sql'])}
+
+@subscribe('rpc.query.databases')
+def query_mysql(data):
+    return {"source": "mysql", "results": query_mysql_db(data['sql'])}
+
+@subscribe('rpc.query.databases')
+def query_mongodb(data):
+    return {"source": "mongodb", "results": query_mongo(data['query'])}
+
+# Caller - collect ALL results
+results = client.call_all('rpc.query.databases', {'sql': 'SELECT * FROM users'})
+# Returns: [
+#     {"source": "postgres", "results": [...]},
+#     {"source": "mysql", "results": [...]},
+#     {"source": "mongodb", "results": [...]}
+# ]
+
+# Aggregate results
+all_users = []
+for result in results:
+    all_users.extend(result['results'])
+```
+
+**Behavior:**
+- All handlers execute and return results
+- All **non-None** results are collected into a list
+- Handler errors are logged but don't stop other handlers
+- Empty list returned if all handlers return `None`
+- Useful for aggregating data from multiple services/databases
+
+**Use Cases:**
+- Query multiple databases and combine results
+- Get status from multiple microservices
+- Fan-out work and gather responses
+- Parallel data collection
 
 ### RPC Error Handling with TchuRPCException
 
