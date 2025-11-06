@@ -5,6 +5,53 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.27] - 2025-11-06
+
+### Added
+- **NEW**: `ServerlessProducer` and `ServerlessClient` for serverless environments
+  - Designed for Cloud Functions, Lambda, and other short-lived serverless platforms
+  - Uses `pika` directly instead of Celery for lightweight, short-lived connections
+  - Similar approach to the original tchu library (works where Celery connection pooling fails)
+  - Perfect for publish-only scenarios in cloud functions
+  - Supports context manager pattern for automatic connection cleanup
+- Added `pika>=1.3.0` as a core dependency
+- Comprehensive documentation in README for serverless usage
+  - Usage examples for Google Cloud Functions
+  - Network configuration guidance (VPC connectors)
+  - Comparison table: ServerlessClient vs TchuClient
+
+### Use Cases
+```python
+# Cloud Function example
+from tchu_tchu.serverless_producer import ServerlessClient
+
+def publish_event(request):
+    with ServerlessClient(broker_url=BROKER_URL) as client:
+        client.publish('user.created', {'user_id': 123})
+    return {'status': 'published'}
+```
+
+### Key Features
+- ✅ Works in Cloud Functions, AWS Lambda, Azure Functions
+- ✅ Lightweight - minimal dependencies and overhead
+- ✅ Auto-reconnect with retry logic built-in
+- ✅ Context manager support for clean resource management
+- ⚠️ Publish-only (no RPC or subscribe support)
+
+### Migration from Old Tchu
+If you're migrating from the original `tchu` library in cloud functions:
+```python
+# Old tchu library
+from tchu import TchuClient
+client = TchuClient()
+client.publish('topic', data)
+
+# New tchu-tchu (v2.2.27+)
+from tchu_tchu.serverless_producer import ServerlessClient
+client = ServerlessClient(broker_url=BROKER_URL)
+client.publish('topic', data)
+```
+
 ## [2.2.26] - 2025-11-05
 
 ### Added

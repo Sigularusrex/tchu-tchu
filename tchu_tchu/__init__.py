@@ -19,6 +19,7 @@ from tchu_tchu.events import TchuEvent
 from tchu_tchu.utils.error_handling import TchuRPCException
 from tchu_tchu.version import __version__
 from tchu_tchu.django import setup_celery_queue
+from tchu_tchu.serverless_producer import ServerlessProducer, ServerlessClient
 
 __all__ = [
     "TchuClient",
@@ -29,5 +30,7 @@ __all__ = [
     "setup_celery_queue",
     "TchuEvent",
     "TchuRPCException",
+    "ServerlessProducer",
+    "ServerlessClient",
     "__version__",
 ]
