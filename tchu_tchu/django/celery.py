@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from kombu import Exchange, Queue, binding
 from celery import Celery as CeleryCelery
-from celery.signals import worker_process_init
+from celery.signals import worker_ready
 
 from tchu_tchu.subscriber import get_subscribed_routing_keys, create_topic_dispatcher
 from tchu_tchu.logging.handlers import get_logger
@@ -62,13 +62,14 @@ def setup_celery_queue(
     """
     logger.info(f"📞 setup_celery_queue() called for queue: {queue_name}")
 
-    # Register a worker_process_init signal handler to import modules when worker starts
-    # This ensures Django is fully ready before importing subscriber modules
-    @worker_process_init.connect
-    def _import_subscribers_on_worker_init(sender=None, **kwargs):
-        """Import subscriber modules when worker process initializes (Django is ready)."""
+    # Register a worker_ready signal handler to import modules BEFORE worker starts consuming tasks
+    # This ensures handlers are registered before any events can be dispatched
+    # worker_ready fires AFTER all initialization but BEFORE worker starts consuming
+    @worker_ready.connect
+    def _import_subscribers_on_worker_ready(sender=None, **kwargs):
+        """Import subscriber modules when worker is ready (BEFORE consuming tasks)."""
         logger.info("=" * 80)
-        logger.info(f"🚀 TCHU-TCHU WORKER INIT: {queue_name}")
+        logger.info(f"🚀 TCHU-TCHU WORKER READY: {queue_name}")
         logger.info("=" * 80)
 
         for module in subscriber_modules:
@@ -82,10 +83,18 @@ def setup_celery_queue(
 
         registry = get_registry()
         logger.info(f"📊 Total handlers registered: {registry.get_handler_count()}")
+
+        if registry.get_handler_count() == 0:
+            logger.warning(
+                "⚠️  WARNING: No handlers were registered! "
+                "Make sure your subscriber modules contain @subscribe decorators."
+            )
+
+        logger.info("✅ Handler registration complete - worker ready to consume tasks")
         logger.info("=" * 80)
 
     # Try to import modules NOW to get routing keys for queue configuration
-    # If Django isn't ready, skip and let worker_process_init handle it
+    # If Django isn't ready, skip and let worker_ready signal handle it
     for module in subscriber_modules:
         try:
             importlib.import_module(module)
@@ -97,7 +106,7 @@ def setup_celery_queue(
                 or "Apps aren't loaded yet" in exception_str
             ):
                 logger.info(
-                    "⏳ Skipping remaining imports - Django not ready (will import on worker init)"
+                    "⏳ Skipping remaining imports - Django not ready (will import when worker is ready)"
                 )
                 break  # Skip remaining modules
             else:

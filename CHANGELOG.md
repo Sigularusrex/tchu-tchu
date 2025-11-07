@@ -5,6 +5,23 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.31] - 2025-11-07
+
+### Fixed
+- **CRITICAL**: Fixed race condition causing "no handler found" errors on first event dispatch
+  - Changed from `worker_process_init` to `worker_ready` signal for handler registration
+  - `worker_ready` fires AFTER all initialization but BEFORE worker starts consuming tasks
+  - Ensures handlers are fully registered before any events can be dispatched
+  - Eliminates timing issues where first event fails but subsequent events succeed
+  - Added warning if no handlers are registered after module imports
+
+### Changed
+- Handler registration now uses `worker_ready` signal instead of `worker_process_init`
+- Added explicit logging when handler registration is complete
+- Improved error messages to help diagnose handler registration issues
+
+**If you're experiencing intermittent "no handler" errors, upgrade immediately!**
+
 ## [2.2.30] - 2025-11-07
 
 ### Fixed
