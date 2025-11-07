@@ -5,6 +5,24 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.30] - 2025-11-07
+
+### Fixed
+- **CRITICAL**: Fixed `ServerlessProducer` serialization by pre-encoding to bytes
+  - Manually serialize task message to bytes before passing to kombu
+  - Set `serializer=None` to prevent double serialization
+  - Fixes "argument for 's' must be a bytes object" error in struct.pack
+
+### Added
+- Comprehensive debug logging in `ServerlessProducer` for troubleshooting
+  - Logs connection initialization with transport details
+  - Logs message serialization steps with type information
+  - Logs publish attempts with exchange and routing key
+  - Includes detailed error logging with stack traces
+  - All logs prefixed with `[ServerlessProducer]` for easy filtering
+
+**If you're using v2.2.29, upgrade immediately** - serialization is still broken!
+
 ## [2.2.29] - 2025-11-06
 
 ### Fixed

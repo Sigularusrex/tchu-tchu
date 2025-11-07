@@ -61,11 +61,21 @@ class ServerlessProducer:
         """Ensure connection is established."""
         try:
             if self._connection is None:
+                logger.debug(
+                    f"[ServerlessProducer] Creating new connection to {self.broker_url}"
+                )
+
                 # Create kombu connection
                 self._connection = Connection(
                     self.broker_url,
                     connect_timeout=self.connection_timeout,
                 )
+
+                logger.debug(
+                    f"[ServerlessProducer] Connection object created, "
+                    f"transport={self._connection.transport_cls}"
+                )
+
                 # Create exchange
                 self._exchange = Exchange(
                     self.exchange_name,
@@ -73,8 +83,18 @@ class ServerlessProducer:
                     durable=True,
                 )
 
-                logger.debug(f"Initialized connection to RabbitMQ at {self.broker_url}")
+                logger.debug(
+                    f"[ServerlessProducer] Exchange created: "
+                    f"name={self.exchange_name}, type=topic, durable=True"
+                )
+                logger.info(f"Initialized connection to RabbitMQ at {self.broker_url}")
+            else:
+                logger.debug("[ServerlessProducer] Reusing existing connection")
         except Exception as e:
+            logger.error(
+                f"[ServerlessProducer] Failed to initialize connection: {e}",
+                exc_info=True,
+            )
             log_error(
                 logger,
                 f"Failed to initialize RabbitMQ connection",
@@ -114,16 +134,29 @@ class ServerlessProducer:
             # Generate unique message ID
             message_id = str(uuid.uuid4())
 
+            logger.debug(
+                f"[ServerlessProducer] Starting publish: routing_key={routing_key}, message_id={message_id}"
+            )
+
             # Serialize the message body first (same as CeleryProducer)
             if isinstance(body, (str, bytes)):
                 serialized_body = (
                     body if isinstance(body, str) else body.decode("utf-8")
                 )
+                logger.debug(
+                    f"[ServerlessProducer] Body is string/bytes, type={type(body).__name__}, "
+                    f"serialized_body type={type(serialized_body).__name__}"
+                )
             else:
                 serialized_body = dumps_message(body)
+                logger.debug(
+                    f"[ServerlessProducer] Body serialized with dumps_message, "
+                    f"type={type(serialized_body).__name__}, length={len(serialized_body)}"
+                )
 
             # Ensure connection
             self._ensure_connection()
+            logger.debug(f"[ServerlessProducer] Connection established")
 
             # Create Celery task message
             # Note: We pass serialized_body as a string (already JSON),
@@ -138,20 +171,65 @@ class ServerlessProducer:
                 "expires": None,
             }
 
+            logger.debug(
+                f"[ServerlessProducer] Task message created: "
+                f"task={self.dispatcher_task_name}, id={message_id}"
+            )
+
             # Use kombu to publish the task (handles Celery protocol properly)
             with self._connection.Producer() as producer:
-                # Send task using kombu's task protocol
-                # kombu will JSON-serialize the entire task_message dict
-                producer.publish(
-                    task_message,
-                    exchange=self._exchange,
-                    routing_key=routing_key,
-                    serializer="json",
-                    content_type="application/json",
-                    content_encoding="utf-8",
-                    delivery_mode=delivery_mode,
-                    declare=[self._exchange],  # Ensure exchange exists
-                )
+                # Manually serialize to ensure we have bytes
+                # This avoids kombu serialization issues
+                import json as stdlib_json
+
+                try:
+                    message_str = stdlib_json.dumps(
+                        task_message,
+                        ensure_ascii=False,
+                    )
+                    logger.debug(
+                        f"[ServerlessProducer] Task message JSON serialized, "
+                        f"length={len(message_str)}, type={type(message_str).__name__}"
+                    )
+
+                    message_bytes = message_str.encode("utf-8")
+                    logger.debug(
+                        f"[ServerlessProducer] Message encoded to bytes, "
+                        f"length={len(message_bytes)}, type={type(message_bytes).__name__}"
+                    )
+                except Exception as serialize_error:
+                    logger.error(
+                        f"[ServerlessProducer] Serialization failed: {serialize_error}",
+                        exc_info=True,
+                    )
+                    raise
+
+                # Send pre-serialized bytes
+                try:
+                    logger.debug(
+                        f"[ServerlessProducer] Publishing to exchange={self.exchange_name}, "
+                        f"routing_key={routing_key}, delivery_mode={delivery_mode}"
+                    )
+
+                    producer.publish(
+                        message_bytes,
+                        exchange=self._exchange,
+                        routing_key=routing_key,
+                        serializer=None,  # Don't serialize again
+                        content_type="application/json",
+                        content_encoding="utf-8",
+                        delivery_mode=delivery_mode,
+                        declare=[self._exchange],  # Ensure exchange exists
+                    )
+
+                    logger.debug(f"[ServerlessProducer] Publish successful")
+
+                except Exception as publish_error:
+                    logger.error(
+                        f"[ServerlessProducer] Publish to broker failed: {publish_error}",
+                        exc_info=True,
+                    )
+                    raise
 
             logger.info(
                 f"Published message {message_id} to routing key '{routing_key}'",
@@ -163,6 +241,10 @@ class ServerlessProducer:
         except PublishError:
             raise
         except Exception as e:
+            logger.error(
+                f"[ServerlessProducer] Failed to publish message to routing key '{routing_key}': {e}",
+                exc_info=True,
+            )
             log_error(
                 logger,
                 f"Failed to publish message to routing key '{routing_key}'",

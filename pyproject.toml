@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tchu-tchu"
-version = "2.2.29"
+version = "2.2.30"
 description = "A modern Celery-based messaging library with true broadcast support for microservices"
 authors = ["David Sigley <djsigley@gmail.com>"]
 license = "MIT"
