@@ -5,7 +5,9 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
-> **🚀 v2.2.27 Released** - Serverless producer for serverless environments (Cloud Functions, Lambda)! **[See Serverless Guide →](#serverless-environments-cloud-functions-lambda)**  
+> **🚨 v2.2.28 Released** - CRITICAL FIX for ServerlessProducer! If using v2.2.27, upgrade immediately. **[See Serverless Guide →](#serverless-environments-cloud-functions-lambda)**  
+>
+> **🚀 v2.2.27 Released** - Serverless producer for serverless environments (Cloud Functions, Lambda)!  
 >
 > **🚀 v2.2.26 Released** - Extended Celery class with cleaner API! Import `Celery` from tchu-tchu for seamless integration.  
 > **[See Quick Start →](#django--celery-simplified-setup)**
@@ -489,7 +491,7 @@ This helps distinguish between point-to-point RPC calls and broadcast events.
 
 ## Serverless Environments (Cloud Functions, Lambda)
 
-**v2.2.27+** includes a serverless producer that works in serverless environments where Celery's connection pooling doesn't work well.
+**v2.2.28+** includes a serverless producer that works in serverless environments where Celery's connection pooling doesn't work well.
 
 ### Why a Serverless Producer?
 
@@ -566,8 +568,7 @@ export RABBITMQ_URL="amqp://username:password@rabbitmq-host:5672//"
 
 **Requirements:**
 ```txt
-tchu-tchu>=2.2.27
-pika>=1.3.0
+tchu-tchu>=2.2.28
 ```
 
 ### Network Access Requirements

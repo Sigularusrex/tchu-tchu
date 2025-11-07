@@ -5,6 +5,21 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.28] - 2025-11-06
+
+### Fixed
+- **CRITICAL**: Fixed `ServerlessProducer` to use `kombu` instead of manual message creation
+  - Messages are now properly formatted as Celery tasks and consumed by workers
+  - Previous version (2.2.27) published messages that were not processed by subscribers
+  - Now uses `kombu.Producer` with Celery protocol (same as CeleryProducer)
+  - Compatible with all existing tchu-tchu subscribers
+
+### Changed
+- Switched from `pika` to `kombu` for ServerlessProducer (kombu is already a dependency)
+- ServerlessProducer now creates proper Celery task messages that dispatch correctly
+
+**If you're using v2.2.27, upgrade immediately** - messages are being published but not consumed!
+
 ## [2.2.27] - 2025-11-06
 
 ### Added

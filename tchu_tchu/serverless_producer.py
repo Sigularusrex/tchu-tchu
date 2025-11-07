@@ -8,9 +8,9 @@ Similar to the original tchu library's approach.
 
 import json
 import uuid
-import pika
 from typing import Any, Dict, Union, Optional
 from urllib.parse import urlparse
+from kombu import Connection, Exchange, Producer
 
 from tchu_tchu.utils.json_encoder import dumps_message
 from tchu_tchu.utils.error_handling import PublishError
@@ -39,6 +39,7 @@ class ServerlessProducer:
         broker_url: str,
         exchange_name: str = "tchu_events",
         connection_timeout: int = 10,
+        dispatcher_task_name: str = "tchu_tchu.dispatch_event",
     ) -> None:
         """
         Initialize the ServerlessProducer.
@@ -47,67 +48,40 @@ class ServerlessProducer:
             broker_url: RabbitMQ connection URL (e.g., "amqp://user:pass@host:5672//")
             exchange_name: Exchange name (default: "tchu_events")
             connection_timeout: Connection timeout in seconds (default: 10)
+            dispatcher_task_name: Name of the dispatcher task (default: 'tchu_tchu.dispatch_event')
         """
         self.broker_url = broker_url
         self.exchange_name = exchange_name
         self.connection_timeout = connection_timeout
+        self.dispatcher_task_name = dispatcher_task_name
         self._connection = None
-        self._channel = None
-
-    def _parse_broker_url(self) -> pika.ConnectionParameters:
-        """Parse broker URL into pika ConnectionParameters."""
-        try:
-            parsed = urlparse(self.broker_url)
-
-            # Extract credentials
-            username = parsed.username or "guest"
-            password = parsed.password or "guest"
-
-            # Extract host and port
-            host = parsed.hostname or "localhost"
-            port = parsed.port or 5672
-
-            # Extract virtual host (path without leading /)
-            vhost = parsed.path.lstrip("/") or "/"
-
-            credentials = pika.PlainCredentials(username, password)
-
-            return pika.ConnectionParameters(
-                host=host,
-                port=port,
-                virtual_host=vhost,
-                credentials=credentials,
-                socket_timeout=self.connection_timeout,
-                connection_attempts=3,
-                retry_delay=1,
-            )
-        except Exception as e:
-            raise PublishError(f"Failed to parse broker URL: {e}")
+        self._exchange = None
 
     def _ensure_connection(self) -> None:
-        """Ensure connection and channel are established."""
+        """Ensure connection is established."""
         try:
-            if self._connection is None or self._connection.is_closed:
-                params = self._parse_broker_url()
-                self._connection = pika.BlockingConnection(params)
-                self._channel = self._connection.channel()
-
-                # Declare the exchange (idempotent)
-                self._channel.exchange_declare(
-                    exchange=self.exchange_name,
-                    exchange_type="topic",
+            if self._connection is None:
+                # Create kombu connection
+                self._connection = Connection(
+                    self.broker_url,
+                    connect_timeout=self.connection_timeout,
+                )
+                # Create exchange
+                self._exchange = Exchange(
+                    self.exchange_name,
+                    type="topic",
                     durable=True,
                 )
 
-                logger.debug(f"Connected to RabbitMQ at {self.broker_url}")
+                logger.debug(f"Initialized connection to RabbitMQ at {self.broker_url}")
         except Exception as e:
             log_error(
                 logger,
-                f"Failed to connect to RabbitMQ",
+                f"Failed to initialize RabbitMQ connection",
                 e,
                 broker_url=self.broker_url,
             )
-            raise PublishError(f"Failed to connect to RabbitMQ: {e}")
+            raise PublishError(f"Failed to initialize RabbitMQ connection: {e}")
 
     def publish(
         self,
@@ -119,6 +93,9 @@ class ServerlessProducer:
     ) -> str:
         """
         Publish a message to a routing key (broadcast to all subscribers).
+
+        This creates a Celery task message that will be processed by the
+        tchu_tchu.dispatch_event task on the consumer side.
 
         Args:
             routing_key: Topic routing key (e.g., 'user.created', 'order.*')
@@ -139,28 +116,35 @@ class ServerlessProducer:
 
             # Serialize the message body
             if isinstance(body, (str, bytes)):
-                serialized_body = (
-                    body if isinstance(body, bytes) else body.encode("utf-8")
-                )
+                serialized_body = body
             else:
-                serialized_body = dumps_message(body).encode("utf-8")
+                serialized_body = dumps_message(body)
 
             # Ensure connection
             self._ensure_connection()
 
-            # Publish to exchange
-            properties = pika.BasicProperties(
-                delivery_mode=delivery_mode,
-                content_type=content_type,
-                message_id=message_id,
-            )
-
-            self._channel.basic_publish(
-                exchange=self.exchange_name,
-                routing_key=routing_key,
-                body=serialized_body,
-                properties=properties,
-            )
+            # Use kombu to publish the task (handles Celery protocol properly)
+            with self._connection.Producer() as producer:
+                # Send task using kombu's task protocol
+                # This is what Celery uses internally
+                producer.publish(
+                    {
+                        "task": self.dispatcher_task_name,
+                        "id": message_id,
+                        "args": [serialized_body],
+                        "kwargs": {"routing_key": routing_key},
+                        "retries": 0,
+                        "eta": None,
+                        "expires": None,
+                    },
+                    exchange=self._exchange,
+                    routing_key=routing_key,
+                    serializer="json",
+                    content_type="application/json",
+                    content_encoding="utf-8",
+                    delivery_mode=delivery_mode,
+                    declare=[self._exchange],  # Ensure exchange exists
+                )
 
             logger.info(
                 f"Published message {message_id} to routing key '{routing_key}'",
@@ -183,10 +167,8 @@ class ServerlessProducer:
     def close(self) -> None:
         """Close the connection."""
         try:
-            if self._channel and self._channel.is_open:
-                self._channel.close()
-            if self._connection and self._connection.is_open:
-                self._connection.close()
+            if self._connection:
+                self._connection.release()
             logger.debug("Closed RabbitMQ connection")
         except Exception as e:
             logger.warning(f"Error closing connection: {e}")
