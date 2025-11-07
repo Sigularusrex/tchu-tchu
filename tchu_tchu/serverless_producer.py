@@ -114,29 +114,36 @@ class ServerlessProducer:
             # Generate unique message ID
             message_id = str(uuid.uuid4())
 
-            # Serialize the message body
+            # Serialize the message body first (same as CeleryProducer)
             if isinstance(body, (str, bytes)):
-                serialized_body = body
+                serialized_body = (
+                    body if isinstance(body, str) else body.decode("utf-8")
+                )
             else:
                 serialized_body = dumps_message(body)
 
             # Ensure connection
             self._ensure_connection()
 
+            # Create Celery task message
+            # Note: We pass serialized_body as a string (already JSON),
+            # kombu will serialize the entire task dict including this string
+            task_message = {
+                "task": self.dispatcher_task_name,
+                "id": message_id,
+                "args": [serialized_body],  # Already JSON string
+                "kwargs": {"routing_key": routing_key},
+                "retries": 0,
+                "eta": None,
+                "expires": None,
+            }
+
             # Use kombu to publish the task (handles Celery protocol properly)
             with self._connection.Producer() as producer:
                 # Send task using kombu's task protocol
-                # This is what Celery uses internally
+                # kombu will JSON-serialize the entire task_message dict
                 producer.publish(
-                    {
-                        "task": self.dispatcher_task_name,
-                        "id": message_id,
-                        "args": [serialized_body],
-                        "kwargs": {"routing_key": routing_key},
-                        "retries": 0,
-                        "eta": None,
-                        "expires": None,
-                    },
+                    task_message,
                     exchange=self._exchange,
                     routing_key=routing_key,
                     serializer="json",
