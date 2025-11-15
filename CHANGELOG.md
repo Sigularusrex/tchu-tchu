@@ -5,6 +5,104 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.31] - 2025-11-07
+
+### Changed
+- Improved logging for handler registration to aid in diagnosing queue binding issues
+- Simplified log messages (removed excessive emojis and visual separators)
+- Log messages now use `logger.debug()` for verbose import details
+- Added handler count to queue configuration log for visibility
+
+## [2.2.30] - 2025-11-07
+
+### Fixed
+- **CRITICAL**: Fixed `ServerlessProducer` serialization by pre-encoding to bytes
+  - Manually serialize task message to bytes before passing to kombu
+  - Set `serializer=None` to prevent double serialization
+  - Fixes "argument for 's' must be a bytes object" error in struct.pack
+
+### Added
+- Comprehensive debug logging in `ServerlessProducer` for troubleshooting
+  - Logs connection initialization with transport details
+  - Logs message serialization steps with type information
+  - Logs publish attempts with exchange and routing key
+  - Includes detailed error logging with stack traces
+  - All logs prefixed with `[ServerlessProducer]` for easy filtering
+
+**If you're using v2.2.29, upgrade immediately** - serialization is still broken!
+
+## [2.2.29] - 2025-11-06
+
+### Fixed
+- **CRITICAL**: Fixed `ServerlessProducer` serialization error: "argument for 's' must be a bytes object"
+  - Properly handle string vs bytes conversion before passing to kombu
+  - Ensure task message structure is correctly serialized
+  - Messages now publish without struct.pack errors
+
+**If you're using v2.2.28, upgrade immediately** - all messages are failing to publish!
+
+## [2.2.28] - 2025-11-06
+
+### Fixed
+- **CRITICAL**: Fixed `ServerlessProducer` to use `kombu` instead of manual message creation
+  - Messages are now properly formatted as Celery tasks and consumed by workers
+  - Previous version (2.2.27) published messages that were not processed by subscribers
+  - Now uses `kombu.Producer` with Celery protocol (same as CeleryProducer)
+  - Compatible with all existing tchu-tchu subscribers
+
+### Changed
+- Switched from `pika` to `kombu` for ServerlessProducer (kombu is already a dependency)
+- ServerlessProducer now creates proper Celery task messages that dispatch correctly
+
+**If you're using v2.2.27, upgrade immediately** - messages are being published but not consumed!
+
+## [2.2.27] - 2025-11-06
+
+### Added
+- **NEW**: `ServerlessProducer` and `ServerlessClient` for serverless environments
+  - Designed for Cloud Functions, Lambda, and other short-lived serverless platforms
+  - Uses `pika` directly instead of Celery for lightweight, short-lived connections
+  - Similar approach to the original tchu library (works where Celery connection pooling fails)
+  - Perfect for publish-only scenarios in cloud functions
+  - Supports context manager pattern for automatic connection cleanup
+- Added `pika>=1.3.0` as a core dependency
+- Comprehensive documentation in README for serverless usage
+  - Usage examples for Google Cloud Functions
+  - Network configuration guidance (VPC connectors)
+  - Comparison table: ServerlessClient vs TchuClient
+
+### Use Cases
+```python
+# Cloud Function example
+from tchu_tchu.serverless_producer import ServerlessClient
+
+def publish_event(request):
+    with ServerlessClient(broker_url=BROKER_URL) as client:
+        client.publish('user.created', {'user_id': 123})
+    return {'status': 'published'}
+```
+
+### Key Features
+- ✅ Works in Cloud Functions, AWS Lambda, Azure Functions
+- ✅ Lightweight - minimal dependencies and overhead
+- ✅ Auto-reconnect with retry logic built-in
+- ✅ Context manager support for clean resource management
+- ⚠️ Publish-only (no RPC or subscribe support)
+
+### Migration from Old Tchu
+If you're migrating from the original `tchu` library in cloud functions:
+```python
+# Old tchu library
+from tchu import TchuClient
+client = TchuClient()
+client.publish('topic', data)
+
+# New tchu-tchu (v2.2.27+)
+from tchu_tchu.serverless_producer import ServerlessClient
+client = ServerlessClient(broker_url=BROKER_URL)
+client.publish('topic', data)
+```
+
 ## [2.2.26] - 2025-11-05
 
 ### Added

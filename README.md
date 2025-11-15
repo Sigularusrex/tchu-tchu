@@ -5,6 +5,14 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
+> **🚨 v2.2.30 Released** - CRITICAL FIX for ServerlessProducer bytes encoding! If using v2.2.29, upgrade immediately. **[See Serverless Guide →](#serverless-environments-cloud-functions-lambda)**  
+>
+> **🚨 v2.2.29 Released** - CRITICAL FIX for ServerlessProducer serialization! If using v2.2.28, upgrade immediately.  
+>
+> **🚨 v2.2.28 Released** - CRITICAL FIX for ServerlessProducer! If using v2.2.27, upgrade immediately.  
+>
+> **🚀 v2.2.27 Released** - Serverless producer for serverless environments (Cloud Functions, Lambda)!  
+>
 > **🚀 v2.2.26 Released** - Extended Celery class with cleaner API! Import `Celery` from tchu-tchu for seamless integration.  
 > **[See Quick Start →](#django--celery-simplified-setup)**
 >
@@ -484,6 +492,128 @@ By convention, RPC routing keys start with `rpc.`:
 - `app_name.sub_app_or_model.order.enriched` - Broadcast event (not RPC)
 
 This helps distinguish between point-to-point RPC calls and broadcast events.
+
+## Serverless Environments (Cloud Functions, Lambda)
+
+**v2.2.30+** includes a serverless producer that works in serverless environments where Celery's connection pooling doesn't work well.
+
+### Why a Serverless Producer?
+
+- **Cloud Functions** are short-lived and don't maintain persistent connections
+- Celery uses connection pooling, which expects long-running processes
+- The serverless producer uses `pika` directly (like the original tchu library)
+- Creates short-lived connections that work perfectly in serverless environments
+
+### Usage in Cloud Functions
+
+```python
+# cloud_function/main.py
+import os
+from tchu_tchu.serverless_producer import ServerlessClient
+
+# Get broker URL from environment
+BROKER_URL = os.environ.get('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672//')
+
+def publish_event(request):
+    """Cloud Function that publishes events to tchu-tchu."""
+    # Create client with broker URL
+    client = ServerlessClient(broker_url=BROKER_URL)
+    
+    # Publish event
+    client.publish('coolset.data_room_consumer.data_point.submitted', {
+        'data_point_id': 123,
+        'value': 456.78,
+        'timestamp': '2024-11-06T10:30:00Z'
+    })
+    
+    # Close connection (optional, but recommended)
+    client.close()
+    
+    return {'status': 'published'}
+
+def publish_with_context_manager(request):
+    """Using context manager (automatically closes connection)."""
+    with ServerlessClient(broker_url=BROKER_URL) as client:
+        client.publish('user.created', {'user_id': 123})
+    
+    return {'status': 'published'}
+```
+
+### Using ServerlessProducer Directly
+
+```python
+from tchu_tchu.serverless_producer import ServerlessProducer
+
+# Create producer
+producer = ServerlessProducer(
+    broker_url='amqp://user:pass@rabbitmq-host:5672//',
+    exchange_name='tchu_events',  # Optional, default: 'tchu_events'
+    connection_timeout=10,  # Optional, default: 10 seconds
+)
+
+# Publish messages
+message_id = producer.publish(
+    routing_key='user.created',
+    body={'user_id': 123},
+    delivery_mode=2,  # 1=non-persistent, 2=persistent
+)
+
+# Close when done
+producer.close()
+```
+
+### Configuration
+
+**Environment Variables:**
+```bash
+# Set RabbitMQ connection URL
+export RABBITMQ_URL="amqp://username:password@rabbitmq-host:5672//"
+```
+
+**Requirements:**
+```txt
+tchu-tchu>=2.2.30
+```
+
+### Network Access Requirements
+
+Your cloud function **must have network access** to RabbitMQ:
+
+**Google Cloud Functions:**
+```bash
+# Create VPC connector
+gcloud compute networks vpc-access connectors create rabbitmq-connector \
+    --region=us-central1 \
+    --network=your-vpc \
+    --range=10.8.0.0/28
+
+# Deploy function with VPC access
+gcloud functions deploy my-function \
+    --vpc-connector=rabbitmq-connector \
+    --set-env-vars RABBITMQ_URL="amqp://user:pass@internal-ip:5672//"
+```
+
+**AWS Lambda:**
+- Place Lambda in same VPC as RabbitMQ (or use Amazon MQ)
+- Configure security groups to allow access to RabbitMQ ports
+
+**Azure Functions:**
+- Use VNet Integration to connect to RabbitMQ
+- Or use Azure Service Bus as an alternative
+
+### Comparison: Serverless vs Celery-based
+
+| Feature | ServerlessClient | TchuClient (Celery) |
+|---------|-----------------|---------------------|
+| **Use Case** | Cloud Functions, Lambda | Long-running services |
+| **Connection** | Short-lived | Persistent pool |
+| **Dependencies** | pika only | Celery + kombu |
+| **Overhead** | Minimal | Higher (connection pooling) |
+| **Publish Support** | ✅ Yes | ✅ Yes |
+| **RPC Support** | ❌ No | ✅ Yes |
+| **Subscribe Support** | ❌ No (publish-only) | ✅ Yes |
+
+**Key Difference:** `ServerlessClient` is **publish-only** and perfect for serverless environments where you only need to send events, not consume them.
 
 ## RPC (Request-Response) Pattern
 

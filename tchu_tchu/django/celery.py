@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from kombu import Exchange, Queue, binding
 from celery import Celery as CeleryCelery
-from celery.signals import worker_process_init
+from celery.signals import worker_ready
 
 from tchu_tchu.subscriber import get_subscribed_routing_keys, create_topic_dispatcher
 from tchu_tchu.logging.handlers import get_logger
@@ -60,48 +60,51 @@ def setup_celery_queue(
         durable: Whether queue is durable (default: True)
         auto_delete: Whether queue auto-deletes (default: False)
     """
-    logger.info(f"📞 setup_celery_queue() called for queue: {queue_name}")
 
-    # Register a worker_process_init signal handler to import modules when worker starts
-    # This ensures Django is fully ready before importing subscriber modules
-    @worker_process_init.connect
-    def _import_subscribers_on_worker_init(sender=None, **kwargs):
-        """Import subscriber modules when worker process initializes (Django is ready)."""
-        logger.info("=" * 80)
-        logger.info(f"🚀 TCHU-TCHU WORKER INIT: {queue_name}")
-        logger.info("=" * 80)
+    # Import subscriber modules when worker is ready (before consuming tasks)
+    @worker_ready.connect
+    def _import_subscribers_on_worker_ready(sender=None, **kwargs):
+        """Import subscriber modules when worker is ready."""
+        logger.info(f"Tchu-tchu worker ready for queue: {queue_name}")
 
         for module in subscriber_modules:
-            logger.info(f"📦 Importing subscriber module: {module}")
             try:
                 importlib.import_module(module)
+                logger.debug(f"Imported subscriber module: {module}")
             except Exception as e:
-                logger.error(f"❌ Failed to import {module}: {e}", exc_info=True)
+                logger.error(f"Failed to import {module}: {e}", exc_info=True)
 
         from tchu_tchu.registry import get_registry
 
-        registry = get_registry()
-        logger.info(f"📊 Total handlers registered: {registry.get_handler_count()}")
-        logger.info("=" * 80)
+        handler_count = get_registry().get_handler_count()
 
-    # Try to import modules NOW to get routing keys for queue configuration
-    # If Django isn't ready, skip and let worker_process_init handle it
+        if handler_count == 0:
+            logger.warning(
+                f"No handlers registered for queue '{queue_name}'. "
+                "Verify subscriber_modules contain @subscribe decorators."
+            )
+        else:
+            logger.info(
+                f"Registered {handler_count} handler(s) for queue '{queue_name}'"
+            )
+
+    # Import modules now to get routing keys for queue configuration
+    # Skip if Django isn't ready - worker_ready signal will handle it
     for module in subscriber_modules:
         try:
             importlib.import_module(module)
         except Exception as e:
-            # Check if it's a Django not ready error (check exception type and message)
             exception_str = str(type(e).__name__) + " " + str(e)
             if (
                 "AppRegistryNotReady" in exception_str
                 or "Apps aren't loaded yet" in exception_str
             ):
-                logger.info(
-                    "⏳ Skipping remaining imports - Django not ready (will import on worker init)"
+                logger.debug(
+                    "Django not ready, skipping module imports (will retry on worker ready)"
                 )
-                break  # Skip remaining modules
+                break
             else:
-                logger.warning(f"⚠️  Could not import {module}: {e}")
+                logger.warning(f"Could not import {module}: {e}")
 
     # Collect all routing keys from registered handlers
     all_routing_keys = get_subscribed_routing_keys()
@@ -138,20 +141,16 @@ def setup_celery_queue(
 
     # DON'T set task_default_exchange - let regular tasks use direct routing
     # Only tchu-tchu dispatcher events should use the topic exchange
-    # Regular @celery.shared_task tasks will use default direct routing to the queue
 
-    # Configure for reliable RPC handling
-    # Prefetch multiplier of 1 ensures workers only take one task at a time
-    # This prevents race conditions when multiple workers handle the same queue
-    # This is the KEY setting that fixes intermittent RPC failures with multiple workers
+    # Set prefetch=1 for reliable RPC handling (prevents race conditions)
     celery_app.conf.worker_prefetch_multiplier = 1
-    logger.info("🔧 Set worker_prefetch_multiplier=1 for RPC reliability")
-
-    logger.info(f"✅ Tchu-tchu queue '{queue_name}' configured successfully")
 
     # Create the dispatcher task (registers tchu_tchu.dispatch_event)
     create_topic_dispatcher(celery_app)
-    logger.info(f"✅ setup_celery_queue() completed for queue: {queue_name}")
+
+    logger.info(
+        f"Tchu-tchu queue '{queue_name}' configured with {len(all_routing_keys)} routing key(s)"
+    )
 
 
 class Celery(CeleryCelery):
@@ -235,9 +234,6 @@ class Celery(CeleryCelery):
         """
         # If include not provided, use stored include from Celery constructor
         subscriber_modules = include if include is not None else self.tchu_include
-
-        if subscriber_modules:
-            logger.info(f"📦 Using subscriber modules: {subscriber_modules}")
 
         setup_celery_queue(
             celery_app=self,
