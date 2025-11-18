@@ -1,11 +1,9 @@
 """Django model decorators for automatic event publishing."""
 
-from typing import List, Optional, Callable, Any, Dict, Union
-from functools import wraps
+from typing import List, Optional, Callable, Any, Dict, Type
 
 from tchu_tchu.client import TchuClient
 from tchu_tchu.logging.handlers import get_logger
-from tchu_tchu.utils.error_handling import PublishError
 
 logger = get_logger(__name__)
 
@@ -26,32 +24,56 @@ def auto_publish(
     publish_on: Optional[List[str]] = None,
     client: Optional[TchuClient] = None,
     condition: Optional[Callable] = None,
+    event_classes: Optional[Dict[str, Type]] = None,
+    context_provider: Optional[Callable] = None,
 ):
     """
-    Class decorator for Django models that automatically publishes events.
+    Decorator for Django models that automatically publishes events on save/delete.
+
+    Two modes:
+        1. Raw mode (without event_classes): Publishes raw dicts to generated topics
+        2. Event class mode (with event_classes): Uses TchuEvent classes with validation
+
+    IMPORTANT: If your serializers use self.context, you MUST provide a context_provider.
+    See CONTEXT_PROVIDER_GUIDE.md for patterns.
 
     Args:
-        topic_prefix: Optional custom prefix for topics (default: app_name.model_name)
-        include_fields: Optional list of fields to include in event payload
-        exclude_fields: Optional list of fields to exclude from event payload
-        publish_on: Optional list of events to publish ("created", "updated", "deleted")
-        client: Optional TchuClient instance (creates new one if None)
-        condition: Optional function to determine if event should be published
+        include_fields: List of fields to include (default: all fields)
+        exclude_fields: List of fields to exclude
+        publish_on: Events to publish ["created", "updated", "deleted"] (auto-inferred if using event_classes)
 
-    Returns:
-        Decorated model class
+        # Event class mode (recommended):
+        event_classes: Dict mapping event types to TchuEvent classes
+                      Example: {"created": MyCreatedEvent, "updated": MyUpdatedEvent}
+        context_provider: Function to extract context from instance for serializers
+                         Signature: (instance, event_type) -> Dict[str, Any]
 
-    Example:
+        # Raw mode (legacy):
+        topic_prefix: Prefix for topics (default: app_label.model_name)
+        client: TchuClient instance (default: creates new)
+
+        # Both modes:
+        condition: Function to conditionally publish: (instance, event_type) -> bool
+
+    Example (event class mode):
+        def get_context(instance, event_type):
+            return {"user_id": instance._event_user_id}
+
+        @auto_publish(
+            event_classes={"created": RiskCreatedEvent, "updated": RiskUpdatedEvent},
+            context_provider=get_context
+        )
+        class Risk(models.Model):
+            pass
+
+    Example (raw mode):
         @auto_publish(
             topic_prefix="pulse.compliance",
-            include_fields=["id", "status", "company_id"],
-            exclude_fields=["password"],
+            include_fields=["id", "status"],
             publish_on=["created", "updated"]
         )
-        class RiskAssessment(models.Model):
-            company_id = models.IntegerField()
-            status = models.CharField(max_length=50)
-            # ... other fields
+        class Risk(models.Model):
+            pass
     """
     if not DJANGO_AVAILABLE:
 
@@ -71,17 +93,34 @@ def auto_publish(
         app_label = model_class._meta.app_label
         model_name = model_class._meta.model_name
 
-        # Generate topic prefix if not provided
-        if topic_prefix is None:
-            base_topic = f"{app_label}.{model_name}"
+        # Determine which events to publish
+        if event_classes:
+            # Validate event_classes keys
+            valid_event_types = {"created", "updated", "deleted"}
+            invalid_types = set(event_classes.keys()) - valid_event_types
+            if invalid_types:
+                raise ValueError(
+                    f"Invalid event types in event_classes: {invalid_types}. "
+                    f"Valid types are: {valid_event_types}"
+                )
+            # Auto-infer from event_classes keys
+            events_to_publish = publish_on or list(event_classes.keys())
+
+            # Not needed for event class mode
+            base_topic = None
+            event_client = None
         else:
-            base_topic = f"{topic_prefix}.{model_name}"
+            # Raw event mode - need topic and client
+            events_to_publish = publish_on or ["created", "updated", "deleted"]
 
-        # Default events to publish
-        events_to_publish = publish_on or ["created", "updated", "deleted"]
+            # Generate topic prefix
+            if topic_prefix is None:
+                base_topic = f"{app_label}.{model_name}"
+            else:
+                base_topic = f"{topic_prefix}.{model_name}"
 
-        # Create client if not provided
-        event_client = client or TchuClient()
+            # Create client
+            event_client = client or TchuClient()
 
         def get_model_data(
             instance: models.Model, fields_changed: Optional[List[str]] = None
@@ -148,15 +187,42 @@ def auto_publish(
                 return
 
             try:
-                topic = f"{base_topic}.{event_type}"
                 data = get_model_data(instance, fields_changed)
 
-                event_client.publish(topic, data)
+                if event_classes and event_type in event_classes:
+                    # Event class mode: use event class with its topic and serializers
+                    event_class = event_classes[event_type]
+                    event_instance = event_class()
 
-                logger.info(
-                    f"Published {event_type} event for {model_class.__name__}",
-                    extra={"topic": topic, "model_pk": instance.pk},
-                )
+                    # Get context if provider available
+                    context = None
+                    if context_provider:
+                        try:
+                            context = context_provider(instance, event_type)
+                        except Exception as ctx_err:
+                            logger.warning(
+                                f"Context provider failed: {ctx_err}. Publishing without context.",
+                                extra={"model_pk": instance.pk},
+                                exc_info=True,
+                            )
+
+                    # Serialize with validation and publish
+                    event_instance.serialize_request(data, context=context)
+                    event_instance.publish()
+
+                    logger.info(
+                        f"Published {event_type} event for {model_class.__name__}",
+                        extra={"topic": event_instance.topic, "model_pk": instance.pk},
+                    )
+                else:
+                    # Raw mode: publish directly with generated topic
+                    topic = f"{base_topic}.{event_type}"
+                    event_client.publish(topic, data)
+
+                    logger.info(
+                        f"Published {event_type} event for {model_class.__name__}",
+                        extra={"topic": topic, "model_pk": instance.pk},
+                    )
 
             except Exception as e:
                 logger.error(
@@ -202,11 +268,21 @@ def auto_publish(
             "publish_on": events_to_publish,
             "client": event_client,
             "condition": condition,
+            "event_classes": event_classes,
+            "context_provider": context_provider,
         }
 
-        logger.info(
-            f"Auto-publish configured for {model_class.__name__} with base topic '{base_topic}'"
-        )
+        # Log configuration
+        if event_classes:
+            event_list = ", ".join(event_classes.keys())
+            context_note = " (with context)" if context_provider else ""
+            logger.info(
+                f"Auto-publish: {model_class.__name__} -> events: {event_list}{context_note}"
+            )
+        else:
+            logger.info(
+                f"Auto-publish: {model_class.__name__} -> topic: {base_topic}.*"
+            )
 
         return model_class
 
