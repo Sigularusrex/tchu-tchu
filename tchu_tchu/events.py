@@ -404,12 +404,13 @@ class TchuEvent:
 
         self.client.publish(self.topic, self.validated_data)
 
-    def call(self, timeout: int = 30) -> Any:
+    def call(self, timeout: int = 30, allow_join: bool = False) -> Any:
         """
         Validate and send the event as an RPC call.
 
         Args:
             timeout: Timeout in seconds
+            allow_join: Allow calling result.get() from within a task (default: False)
 
         Returns:
             Response data
@@ -419,7 +420,9 @@ class TchuEvent:
                 "No validated data available. Call serialize_request() first."
             )
 
-        response = self.client.call(self.topic, self.validated_data, timeout=timeout)
+        response = self.client.call(
+            self.topic, self.validated_data, timeout=timeout, allow_join=allow_join
+        )
 
         # Detect error responses (from TchuRPCException)
         is_error = isinstance(response, dict) and response.get("error_code") is not None

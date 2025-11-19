@@ -40,7 +40,12 @@ class TchuClient:
         self.producer.publish(routing_key=topic, body=data, **kwargs)
 
     def call(
-        self, topic: str, data: Union[Dict[str, Any], Any], timeout: int = 30, **kwargs
+        self,
+        topic: str,
+        data: Union[Dict[str, Any], Any],
+        timeout: int = 30,
+        allow_join: bool = False,
+        **kwargs,
     ) -> Any:
         """
         Send a message and wait for a response (RPC-style).
@@ -52,13 +57,18 @@ class TchuClient:
             topic: Topic name to send to
             data: Message data to send
             timeout: Timeout in seconds to wait for response
+            allow_join: Allow calling result.get() from within a task (default: False)
             **kwargs: Additional arguments passed to the producer
 
         Returns:
             Response from the handler
         """
         return self.producer.call(
-            routing_key=topic, body=data, timeout=timeout, **kwargs
+            routing_key=topic,
+            body=data,
+            timeout=timeout,
+            allow_join=allow_join,
+            **kwargs,
         )
 
     def get_topic_info(self, topic: str) -> Dict[str, Any]:
