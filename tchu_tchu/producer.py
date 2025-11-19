@@ -118,6 +118,7 @@ class CeleryProducer:
         content_type: str = "application/json",
         delivery_mode: int = 2,
         timeout: int = 30,
+        allow_join: bool = False,
         **kwargs,
     ) -> Any:
         """
@@ -132,6 +133,7 @@ class CeleryProducer:
             content_type: Content type (for compatibility)
             delivery_mode: Delivery mode (for compatibility)
             timeout: Timeout in seconds to wait for response (default: 30)
+            allow_join: Allow calling result.get() from within a task (default: False)
             **kwargs: Additional arguments passed to send_task
 
         Returns:
@@ -172,7 +174,12 @@ class CeleryProducer:
             try:
                 # Wait for result with timeout
                 # The dispatcher returns a dict with handler results
-                response = result.get(timeout=timeout)
+                if allow_join:
+                    from celery.result import allow_join_result
+                    with allow_join_result():
+                        response = result.get(timeout=timeout)
+                else:
+                    response = result.get(timeout=timeout)
 
                 execution_time = time.time() - start_time
                 logger.info(
@@ -226,6 +233,21 @@ class CeleryProducer:
                 if "timeout" in str(e).lower() or "timed out" in str(e).lower():
                     raise TchuTimeoutError(
                         f"No response received within {timeout} seconds for routing key '{routing_key}'"
+                    )
+                # Check for synchronous execution error in Celery
+                elif (
+                    isinstance(e, RuntimeError)
+                    and "Never call result.get() within a task" in str(e)
+                ):
+                    logger.error(
+                        "Attempted to call result.get() inside a Celery task without allow_join=True. "
+                        "This causes a deadlock/error in Celery. "
+                        "Use allow_join=True if you really need synchronous execution inside a task, "
+                        "but be aware of performance implications.",
+                        extra={"routing_key": routing_key},
+                    )
+                    raise PublishError(
+                        f"RPC call failed: Cannot call result.get() inside a task without allow_join=True. {e}"
                     )
                 else:
                     # Re-raise other exceptions
