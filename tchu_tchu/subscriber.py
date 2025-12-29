@@ -15,6 +15,9 @@ from tchu_tchu.logging.handlers import (
 
 logger = get_logger(__name__)
 
+# Cache for dynamically created Celery tasks
+_dynamic_tasks: Dict[str, Any] = {}
+
 
 def subscribe(
     routing_key: str,
@@ -22,6 +25,7 @@ def subscribe(
     name: Optional[str] = None,
     handler_id: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    celery_options: Optional[Dict[str, Any]] = None,
 ) -> Callable:
     """
     Decorator to subscribe a function to a topic routing key.
@@ -34,19 +38,43 @@ def subscribe(
         name: Optional human-readable name for the handler
         handler_id: Optional unique ID for the handler
         metadata: Optional metadata dictionary
+        celery_options: Optional Celery task options for native retry support.
+            Supported options (passed directly to Celery task decorator):
+            - bind: bool - Bind task to self (default: True for retry support)
+            - autoretry_for: tuple - Exception classes to auto-retry on
+            - retry_backoff: bool/int - Enable exponential backoff
+            - retry_backoff_max: int - Maximum backoff time in seconds
+            - retry_jitter: bool - Add randomness to backoff
+            - max_retries: int - Maximum retry attempts
+            - default_retry_delay: int - Default delay between retries
 
     Returns:
         Decorated function
 
-    Example:
-        @subscribe('user.created')
-        def handle_user_created(event):
-            print(f"User created: {event}")
+    Example (with native Celery retry):
+        @subscribe(
+            'data.process',
+            celery_options={
+                "autoretry_for": (ConnectionError, TimeoutError),
+                "retry_backoff": True,
+                "retry_backoff_max": 600,
+                "retry_jitter": True,
+                "max_retries": 5,
+            }
+        )
+        def process_data(event):
+            # Native Celery retry support!
+            ...
     """
 
     def decorator(func: Callable) -> Callable:
         # Generate handler ID if not provided
         handler_id_val = handler_id or f"{func.__module__}.{func.__name__}"
+
+        # Build metadata
+        handler_metadata = metadata.copy() if metadata else {}
+        if celery_options:
+            handler_metadata["celery_options"] = celery_options
 
         # Register the handler in the local registry
         registry = get_registry()
@@ -54,12 +82,13 @@ def subscribe(
             routing_key=routing_key,
             handler_id=handler_id_val,
             handler=func,
-            metadata=metadata or {},
+            metadata=handler_metadata,
             name=name or func.__name__,
         )
 
         logger.info(
-            f"Registered handler '{handler_id_val}' for topic '{routing_key}'",
+            f"Registered handler '{handler_id_val}' for topic '{routing_key}'"
+            + (" (with celery_options)" if celery_options else ""),
             extra={"routing_key": routing_key, "handler_id": handler_id_val},
         )
 
@@ -70,6 +99,68 @@ def subscribe(
         return wrapper
 
     return decorator
+
+
+def _get_or_create_celery_task(
+    celery_app: Any,
+    handler_id: str,
+    handler_func: Callable,
+    celery_options: Dict[str, Any],
+) -> Any:
+    """
+    Get or create a Celery task for a handler with celery_options.
+
+    This dynamically creates a Celery task with the specified options,
+    giving full native Celery retry support (autoretry_for, retry_backoff, etc.).
+
+    Args:
+        celery_app: Celery app instance
+        handler_id: Unique identifier for the handler
+        handler_func: The handler function to wrap
+        celery_options: Celery task options (autoretry_for, retry_backoff, etc.)
+
+    Returns:
+        Celery task with native options applied
+    """
+    # Check cache first
+    if handler_id in _dynamic_tasks:
+        return _dynamic_tasks[handler_id]
+
+    # Build task decorator options
+    task_options = {
+        "name": f"tchu_tchu.handler.{handler_id}",
+        "bind": celery_options.get("bind", False),
+    }
+
+    # Pass through all Celery-native retry options
+    native_options = [
+        "autoretry_for",
+        "retry_backoff",
+        "retry_backoff_max",
+        "retry_jitter",
+        "max_retries",
+        "default_retry_delay",
+        "retry_kwargs",
+        "acks_late",
+        "reject_on_worker_lost",
+        "throws",
+    ]
+    for opt in native_options:
+        if opt in celery_options:
+            task_options[opt] = celery_options[opt]
+
+    # Create the Celery task dynamically
+    celery_task = celery_app.task(**task_options)(handler_func)
+
+    # Cache it
+    _dynamic_tasks[handler_id] = celery_task
+
+    logger.info(
+        f"Created dynamic Celery task for handler '{handler_id}' with options: "
+        f"{[k for k in celery_options.keys()]}"
+    )
+
+    return celery_task
 
 
 def create_topic_dispatcher(
@@ -101,6 +192,39 @@ def create_topic_dispatcher(
         'tchu_tchu.dispatch_event': {'queue': 'myapp_queue'},
     }
     ```
+
+    Native Celery Retry Support:
+        Pass celery_options through TchuEvent or @subscribe to get full native
+        Celery retry support (autoretry_for, retry_backoff, etc.):
+
+        ```python
+        # Via TchuEvent
+        DataExchangeRunInitiatedEvent(
+            handler=my_handler,
+            celery_options={
+                "autoretry_for": (ConnectionError, TimeoutError),
+                "retry_backoff": True,
+                "retry_backoff_max": 600,
+                "retry_jitter": True,
+                "max_retries": 5,
+            }
+        ).subscribe()
+
+        # Via @subscribe decorator
+        @subscribe(
+            'data.process',
+            celery_options={
+                "autoretry_for": (ConnectionError,),
+                "retry_backoff": True,
+                "max_retries": 3,
+            }
+        )
+        def process_data(event):
+            ...
+        ```
+
+        tchu-tchu internally creates a Celery task with these native options.
+        Your consuming app never needs to import Celery directly!
 
     Args:
         celery_app: Celery app instance
@@ -161,29 +285,60 @@ def create_topic_dispatcher(
             # Execute all matching handlers
             results = []
             for handler_info in handlers:
+                handler_func = handler_info["function"]
+                handler_name = handler_info["name"]
+                handler_id = handler_info["id"]
+                metadata = handler_info.get("metadata", {})
+                celery_options = metadata.get("celery_options", {})
+
                 try:
-                    handler_func = handler_info["function"]
-                    result = handler_func(deserialized)
-                    results.append(
-                        {
-                            "handler": handler_info["name"],
-                            "status": "success",
-                            "result": result,
-                        }
-                    )
-                    log_handler_executed(
-                        logger, handler_info["name"], routing_key, self.request.id
-                    )
+                    if celery_options:
+                        # Handler has celery_options - create/get dynamic Celery task
+                        # This gives full native Celery retry support
+                        celery_task = _get_or_create_celery_task(
+                            celery_app, handler_id, handler_func, celery_options
+                        )
+                        # Dispatch via .delay() for async execution with native retries
+                        async_result = celery_task.delay(deserialized)
+                        results.append(
+                            {
+                                "handler": handler_name,
+                                "status": "dispatched",
+                                "task_id": async_result.id,
+                            }
+                        )
+                        logger.info(
+                            f"Dispatched handler '{handler_name}' as Celery task "
+                            f"with id {async_result.id} (native retry enabled)",
+                            extra={
+                                "routing_key": routing_key,
+                                "task_id": async_result.id,
+                            },
+                        )
+                    else:
+                        # No celery_options - call handler directly (synchronous)
+                        result = handler_func(deserialized)
+                        results.append(
+                            {
+                                "handler": handler_name,
+                                "status": "success",
+                                "result": result,
+                            }
+                        )
+                        log_handler_executed(
+                            logger, handler_name, routing_key, self.request.id
+                        )
+
                 except Exception as e:
                     log_error(
                         logger,
-                        f"Handler '{handler_info['name']}' failed",
+                        f"Handler '{handler_name}' failed",
                         e,
                         routing_key,
                     )
                     results.append(
                         {
-                            "handler": handler_info["name"],
+                            "handler": handler_name,
                             "status": "error",
                             "error": str(e),
                         }

@@ -5,18 +5,12 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI version](https://badge.fury.io/py/tchu-tchu.svg)](https://badge.fury.io/py/tchu-tchu)
 
+> **🚀 v2.4.0 Released** - Native Celery retry support via `celery_options`! Pass `autoretry_for`, `retry_backoff`, `max_retries` through TchuEvent or @subscribe - no Celery imports needed in your app! **[See Celery Retry Options →](#native-celery-retry-support)**
+>
 > **🚨 v2.2.30 Released** - CRITICAL FIX for ServerlessProducer bytes encoding! If using v2.2.29, upgrade immediately. **[See Serverless Guide →](#serverless-environments-cloud-functions-lambda)**  
->
-> **🚨 v2.2.29 Released** - CRITICAL FIX for ServerlessProducer serialization! If using v2.2.28, upgrade immediately.  
->
-> **🚨 v2.2.28 Released** - CRITICAL FIX for ServerlessProducer! If using v2.2.27, upgrade immediately.  
->
-> **🚀 v2.2.27 Released** - Serverless producer for serverless environments (Cloud Functions, Lambda)!  
 >
 > **🚀 v2.2.26 Released** - Extended Celery class with cleaner API! Import `Celery` from tchu-tchu for seamless integration.  
 > **[See Quick Start →](#django--celery-simplified-setup)**
->
-> **📢 v2.2.11 Critical Fix** - If you're on v2.2.9, broadcast events may be silently failing. **[Upgrade now →](./MIGRATION_2.2.11.md)**  
 >
 > **❌ Getting "No handlers found" errors?** See **[Troubleshooting Guide →](./TROUBLESHOOTING_RPC_HANDLERS.md)**
 
@@ -30,6 +24,7 @@ A modern Celery-based messaging library with **true broadcast support** for micr
 - 🛡️ **Django Support** - Built-in Django REST Framework integration with one-line setup
 - ⚡ **Fast** - No task discovery or inspection overhead
 - 🎨 **Simple** - One function call replaces 60+ lines of boilerplate configuration
+- 🔁 **Native Celery Retry** - Pass `celery_options` for automatic retries with exponential backoff
 
 ## Architecture
 
@@ -107,6 +102,80 @@ def list_documents(data):
 **Use for:** Querying data, validation, calculations, inter-service API calls
 
 **Key Difference:** Broadcast events go to ALL subscribers; RPC calls go to ONE handler and return a response.
+
+## Native Celery Retry Support
+
+**🆕 v2.4.0** - Pass Celery retry options through tchu-tchu without importing Celery in your consuming app!
+
+### Via TchuEvent
+
+```python
+from tchu_tchu.events import TchuEvent
+
+class DataExchangeRunInitiatedEvent(TchuEvent):
+    class Meta:
+        topic = "data_exchange.run.initiated"
+        request_serializer_class = DataExchangeRunSerializer
+
+def execute_data_exchange_run_task(event):
+    # Your handler - just a regular function
+    run_id = event.get('run_id')
+    # ... do work that might fail ...
+
+# Pass celery_options - tchu-tchu handles everything internally!
+DataExchangeRunInitiatedEvent(
+    handler=execute_data_exchange_run_task,
+    celery_options={
+        "autoretry_for": (ConnectionError, TimeoutError, IOError),
+        "retry_backoff": True,           # Exponential backoff
+        "retry_backoff_max": 600,        # Max 10 minutes between retries
+        "retry_jitter": True,            # Add randomness to prevent thundering herd
+        "max_retries": 5,                # Maximum retry attempts
+    }
+).subscribe()
+```
+
+### Via @subscribe Decorator
+
+```python
+from tchu_tchu.subscriber import subscribe
+
+@subscribe(
+    'data_exchange.run.initiated',
+    celery_options={
+        "autoretry_for": (ConnectionError, TimeoutError),
+        "retry_backoff": True,
+        "retry_backoff_max": 600,
+        "max_retries": 5,
+    }
+)
+def my_handler(event):
+    # Your handler logic
+    ...
+```
+
+### Supported celery_options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `autoretry_for` | `tuple` | Exception classes that trigger automatic retry |
+| `retry_backoff` | `bool/int` | Enable exponential backoff (True or base multiplier) |
+| `retry_backoff_max` | `int` | Maximum backoff time in seconds (default: 600) |
+| `retry_jitter` | `bool` | Add randomness to backoff to prevent thundering herd |
+| `max_retries` | `int` | Maximum number of retry attempts |
+| `default_retry_delay` | `int` | Default delay between retries in seconds |
+| `acks_late` | `bool` | Acknowledge message after task completes |
+| `reject_on_worker_lost` | `bool` | Reject task if worker dies |
+
+### How It Works
+
+When you pass `celery_options`, tchu-tchu **dynamically creates a Celery task** with those native options and dispatches your handler via `.delay()`. Your consuming app never needs to import or configure Celery directly - everything goes through tchu-tchu!
+
+**Benefits:**
+- ✅ **No Celery imports** in your consuming app
+- ✅ **Full native retry support** (exponential backoff, jitter, etc.)
+- ✅ **Per-handler configuration** - different retry strategies for different events
+- ✅ **Clean separation** - tchu-tchu handles the Celery complexity
 
 ## Installation
 
@@ -1139,7 +1208,7 @@ Methods:
 ```python
 from tchu_tchu import subscribe
 
-@subscribe(routing_key, name=None, handler_id=None, metadata=None)
+@subscribe(routing_key, name=None, handler_id=None, metadata=None, celery_options=None)
 def my_handler(event_data):
     pass
 ```
@@ -1149,6 +1218,13 @@ Parameters:
 - `name` - Optional handler name
 - `handler_id` - Optional unique handler ID
 - `metadata` - Optional metadata dict
+- `celery_options` - Optional dict of Celery task options for native retry support:
+  - `autoretry_for` - Tuple of exception classes to auto-retry on
+  - `retry_backoff` - Enable exponential backoff (bool or int)
+  - `retry_backoff_max` - Maximum backoff time in seconds
+  - `retry_jitter` - Add randomness to backoff
+  - `max_retries` - Maximum retry attempts
+  - `default_retry_delay` - Default delay between retries
 
 ### get_subscribed_routing_keys()
 
@@ -1405,7 +1481,44 @@ Expected latency: < 10ms (vs 500-1500ms in v1.x due to inspection)
 
 For detailed version history, see [CHANGELOG.md](./CHANGELOG.md).
 
-### v2.2.26 (2025-11-05) - Current
+### v2.4.0 (2024-12-29) - Current
+
+**🚀 New: Native Celery Retry Support via celery_options**
+
+Pass Celery retry options through `TchuEvent` or `@subscribe` - your consuming app never needs to import Celery directly!
+
+**Added:**
+- **NEW**: `celery_options` parameter for `TchuEvent` and `@subscribe` decorator
+- Native Celery retry support: `autoretry_for`, `retry_backoff`, `retry_backoff_max`, `retry_jitter`, `max_retries`
+- Dynamic Celery task creation with full native retry capabilities
+- Per-handler retry configuration without touching Celery directly
+
+**Example:**
+```python
+from tchu_tchu.events import TchuEvent
+
+# Pass celery_options - tchu-tchu handles everything!
+DataExchangeRunInitiatedEvent(
+    handler=execute_task,
+    celery_options={
+        "autoretry_for": (ConnectionError, TimeoutError),
+        "retry_backoff": True,
+        "retry_backoff_max": 600,
+        "retry_jitter": True,
+        "max_retries": 5,
+    }
+).subscribe()
+```
+
+---
+
+### v2.3.1 (2024-12-15)
+
+Minor bugfixes and documentation updates.
+
+---
+
+### v2.2.26 (2024-11-05)
 
 **🚀 New: Extended Celery Class**
 

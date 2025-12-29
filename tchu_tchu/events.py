@@ -24,12 +24,26 @@ class TchuEvent:
     - request_serializer_class: DRF serializer for the event request payload
     - response_serializer_class: (optional) DRF serializer for the event response payload (RPC)
     - handler: (optional) function to handle the event when received
+    - celery_options: (optional) Celery task options like retry settings
 
     For custom context reconstruction (e.g., Django auth, Flask user, etc.):
         TchuEvent.set_context_helper(my_custom_helper)
 
     Or per-instance:
         event = MyEvent(context_helper=my_custom_helper)
+
+    Celery retry configuration:
+        event = MyEvent(
+            handler=my_handler,
+            celery_options={
+                "autoretry_for": (ConnectionError, TimeoutError),
+                "max_retries": 3,
+                "countdown": 60,  # Optional: delay between retries in seconds
+            }
+        )
+
+    Note: For advanced retry options like exponential backoff (retry_backoff, retry_jitter),
+    configure them at the Celery app level since they're task decorator options.
     """
 
     topic: str
@@ -38,6 +52,7 @@ class TchuEvent:
     handler: Optional[Callable] = None
     validated_data: Optional[Dict[str, Any]] = None
     context: Optional[Dict[str, Any]] = None
+    celery_options: Optional[Dict[str, Any]] = None
 
     # Class-level context helper (can be set globally)
     _context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
@@ -80,6 +95,7 @@ class TchuEvent:
         error_serializer_class: Optional[Type] = None,
         handler: Optional[Callable] = None,
         context_helper: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        celery_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Initialize the TchuEvent.
@@ -91,6 +107,11 @@ class TchuEvent:
             error_serializer_class: DRF serializer class for error responses (TchuRPCException)
             handler: Handler function for this event
             context_helper: Optional context helper function (overrides class-level helper)
+            celery_options: Optional Celery task options for retry configuration.
+                Supported options:
+                - autoretry_for: Tuple of exception classes to auto-retry on
+                - max_retries: Maximum number of retry attempts (default: 3)
+                - countdown: Delay between retries in seconds (optional)
         """
         # Get values from Meta class if not provided as arguments
         meta = getattr(self, "Meta", None)
@@ -106,6 +127,7 @@ class TchuEvent:
                 meta, "error_serializer_class", None
             )
             handler = handler or getattr(meta, "handler", None)
+            celery_options = celery_options or getattr(meta, "celery_options", None)
 
         if not topic:
             raise ValueError(
@@ -117,6 +139,7 @@ class TchuEvent:
         self.response_serializer_class = response_serializer_class
         self.error_serializer_class = error_serializer_class
         self.handler = handler
+        self.celery_options = celery_options
         self.validated_data = None
         self.context = None
 
@@ -136,6 +159,26 @@ class TchuEvent:
     def subscribe(self) -> str:
         """
         Register the event handler with the message broker.
+
+        The handler receives a TchuEvent instance with validated_data populated.
+
+        For native Celery retry support, pass celery_options:
+
+        ```python
+        MyEvent(
+            handler=my_handler,
+            celery_options={
+                "autoretry_for": (ConnectionError, TimeoutError),
+                "retry_backoff": True,
+                "retry_backoff_max": 600,
+                "retry_jitter": True,
+                "max_retries": 5,
+            }
+        ).subscribe()
+        ```
+
+        tchu-tchu internally creates a Celery task with these native options.
+        Your consuming app never needs to import Celery directly!
 
         Returns:
             Handler ID for unsubscribing
@@ -220,11 +263,16 @@ class TchuEvent:
                 )
                 raise
 
-        # Register the wrapper function directly with the registry
+        # Register the handler with the registry
         handler_name = (
             f"{self.__class__.__name__}_{getattr(self.handler, '__name__', 'handler')}"
         )
         handler_id = f"{self.__class__.__module__}.{self.__class__.__name__}.{getattr(self.handler, '__name__', 'handler')}"
+
+        # Build metadata with celery_options if provided
+        metadata = {}
+        if self.celery_options:
+            metadata["celery_options"] = self.celery_options
 
         registry = get_registry()
         return registry.register_handler(
@@ -232,6 +280,7 @@ class TchuEvent:
             handler=event_handler_wrapper,
             name=handler_name,
             handler_id=handler_id,
+            metadata=metadata,
         )
 
     def serialize_request(
