@@ -5,6 +5,55 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2024-12-29
+
+### Added
+- **NEW**: Native Celery retry support via `celery_options` parameter
+  - Pass Celery retry options through `TchuEvent` or `@subscribe` decorator
+  - Your consuming app never needs to import Celery directly!
+  - tchu-tchu dynamically creates Celery tasks with native retry capabilities
+  - Supports all major Celery retry options:
+    - `autoretry_for`: Tuple of exception classes to auto-retry on
+    - `retry_backoff`: Enable exponential backoff (bool or int)
+    - `retry_backoff_max`: Maximum backoff time in seconds
+    - `retry_jitter`: Add randomness to backoff (thundering herd prevention)
+    - `max_retries`: Maximum retry attempts
+    - `default_retry_delay`: Default delay between retries
+    - `acks_late`: Acknowledge after task completes
+    - `reject_on_worker_lost`: Reject task if worker dies
+
+### Examples
+```python
+# Via TchuEvent
+DataExchangeRunInitiatedEvent(
+    handler=execute_task,
+    celery_options={
+        "autoretry_for": (ConnectionError, TimeoutError),
+        "retry_backoff": True,
+        "retry_backoff_max": 600,
+        "retry_jitter": True,
+        "max_retries": 5,
+    }
+).subscribe()
+
+# Via @subscribe decorator
+@subscribe(
+    'data.process',
+    celery_options={
+        "autoretry_for": (ConnectionError,),
+        "retry_backoff": True,
+        "max_retries": 3,
+    }
+)
+def process_data(event):
+    ...
+```
+
+### How It Works
+When you pass `celery_options`, tchu-tchu dynamically creates a Celery task with those native options and dispatches your handler via `.delay()`. This gives you full native Celery retry support without importing Celery in your consuming app.
+
+---
+
 ## [2.2.31] - 2025-11-07
 
 ### Changed
@@ -287,6 +336,11 @@ See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete instructions.
 
 ## Version History
 
+- **2.4.0** (2024-12-29): Native Celery retry support via `celery_options`
+- **2.3.1** (2024-12-15): Minor bugfixes
+- **2.2.31** (2025-11-07): Logging improvements
+- **2.2.30** (2025-11-07): ServerlessProducer serialization fix
+- **2.2.26** (2025-11-05): Extended Celery class
 - **2.2.11** (2025-10-28): Fixed broadcast event routing
 - **2.2.9** (2025-10-28): Stable Celery-based release
 - **2.2.0-2.2.8**: Development versions
