@@ -255,8 +255,18 @@ def create_topic_dispatcher(
                 deserialized = message_body
 
             # Extract message type from _tchu_meta
-            tchu_meta = deserialized.get("_tchu_meta", {})
-            is_rpc = tchu_meta.get("is_rpc", False)
+            # BACKWARD COMPATIBILITY: If _tchu_meta is missing (from 2.x publishers),
+            # default to old behavior (direct call) to maintain RPC functionality
+            # TODO: remove backwards compatibility when moving to Salt
+            if "_tchu_meta" not in deserialized:
+                # No metadata = old 2.x message, use direct call (old behavior)
+                is_rpc = True
+                logger.debug(
+                    f"No _tchu_meta found (2.x publisher?), using direct call for '{routing_key}'"
+                )
+            else:
+                tchu_meta = deserialized["_tchu_meta"]
+                is_rpc = tchu_meta.get("is_rpc", False)
 
             # Get all matching handlers for this routing key
             handlers = registry.get_handlers(routing_key)

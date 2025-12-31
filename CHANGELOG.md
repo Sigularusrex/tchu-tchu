@@ -5,6 +5,15 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2024-12-31
+
+### Fixed
+- **Backward compatibility with 2.x publishers**: Messages without `_tchu_meta` (from 2.x publishers) now default to direct call (old behavior) instead of async dispatch
+- This allows gradual migration: upgrade subscribers to 3.x first, then publishers
+- RPC calls from 2.x publishers now work correctly with 3.x subscribers
+
+---
+
 ## [3.0.0] - 2024-12-31
 
 ### ⚠️ BREAKING CHANGES
@@ -408,6 +417,7 @@ See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete instructions.
 
 ## Version History
 
+- **3.0.1** (2024-12-31): Backward compatibility fix for 2.x publishers
 - **3.0.0** (2024-12-31): Major architecture change - all handlers as Celery tasks, async broadcast, native dedup
 - **2.4.0** (2024-12-29): Initial celery_options support (superseded by 3.0.0)
 - **2.3.1** (2024-12-15): Minor bugfixes
