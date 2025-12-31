@@ -79,11 +79,17 @@ class CeleryProducer:
             # Generate unique message ID
             message_id = str(uuid.uuid4())
 
-            # Serialize the message body
+            # Add tchu metadata to indicate this is a broadcast (not RPC)
             if isinstance(body, (str, bytes)):
+                # If body is already serialized, we can't add metadata
                 serialized_body = body
             else:
-                serialized_body = dumps_message(body)
+                # Add _tchu_meta to the body for dispatcher to determine execution mode
+                body_with_meta = {
+                    **body,
+                    "_tchu_meta": {"is_rpc": False},
+                }
+                serialized_body = dumps_message(body_with_meta)
 
             # Send task to dispatcher with routing_key in properties
             # The exchange/queue routing is configured in each app's Celery config
@@ -149,11 +155,17 @@ class CeleryProducer:
             # Generate unique message ID
             message_id = str(uuid.uuid4())
 
-            # Serialize the message body
+            # Add tchu metadata to indicate this is an RPC call (requires direct execution)
             if isinstance(body, (str, bytes)):
+                # If body is already serialized, we can't add metadata
                 serialized_body = body
             else:
-                serialized_body = dumps_message(body)
+                # Add _tchu_meta to the body for dispatcher to determine execution mode
+                body_with_meta = {
+                    **body,
+                    "_tchu_meta": {"is_rpc": True},
+                }
+                serialized_body = dumps_message(body_with_meta)
 
             # Send task to dispatcher and wait for result
             # For RPC, we want the result, so we don't use ignore_result
@@ -176,6 +188,7 @@ class CeleryProducer:
                 # The dispatcher returns a dict with handler results
                 if allow_join:
                     from celery.result import allow_join_result
+
                     with allow_join_result():
                         response = result.get(timeout=timeout)
                 else:
@@ -235,10 +248,9 @@ class CeleryProducer:
                         f"No response received within {timeout} seconds for routing key '{routing_key}'"
                     )
                 # Check for synchronous execution error in Celery
-                elif (
-                    isinstance(e, RuntimeError)
-                    and "Never call result.get() within a task" in str(e)
-                ):
+                elif isinstance(
+                    e, RuntimeError
+                ) and "Never call result.get() within a task" in str(e):
                     logger.error(
                         "Attempted to call result.get() inside a Celery task without allow_join=True. "
                         "This causes a deadlock/error in Celery. "

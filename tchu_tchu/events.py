@@ -162,6 +162,10 @@ class TchuEvent:
 
         The handler receives a TchuEvent instance with validated_data populated.
 
+        ALL handlers are created as Celery tasks at subscribe time (import time).
+        For broadcast messages, handlers are dispatched via .delay() for async execution.
+        For RPC messages, handlers are called directly to return results.
+
         For native Celery retry support, pass celery_options:
 
         ```python
@@ -189,17 +193,44 @@ class TchuEvent:
         if not self.handler:
             raise ValueError(f"No handler defined for event topic '{self.topic}'")
 
-        # Create wrapper function that handles the event instance
-        def event_handler_wrapper(data: Dict[str, Any]) -> Any:
-            """Wrapper that creates event instance and calls handler."""
+        # Import shared_task here to create Celery task at subscribe time (import time)
+        from celery import shared_task
+
+        # Capture references for the closure
+        event_class = self.__class__
+        original_handler = self.handler
+        context_helper = self._instance_context_helper or self._context_helper
+
+        # Build handler identifiers
+        handler_name = (
+            f"{event_class.__name__}_{getattr(original_handler, '__name__', 'handler')}"
+        )
+        handler_id = f"{event_class.__module__}.{event_class.__name__}.{getattr(original_handler, '__name__', 'handler')}"
+
+        # Build Celery task options
+        task_options = {
+            "name": f"tchu_tchu.handler.{handler_id}",
+        }
+
+        # Add celery_options if provided (retries, rate limits, etc.)
+        if self.celery_options:
+            task_options.update(self.celery_options)
+
+        # Create the Celery task with TchuEvent wrapper logic included
+        @shared_task(**task_options)
+        def celery_task_handler(data: Dict[str, Any]) -> Any:
+            """Celery task that wraps handler with TchuEvent logic."""
+            # Remove _tchu_meta before processing
+            clean_data = {k: v for k, v in data.items() if k != "_tchu_meta"}
+
             # Create new event instance
-            event_instance = self.__class__()
+            event_instance = event_class()
 
             # Check if authorization was skipped
             auth_fields = [
-                data.get("user"),
-                data.get("company"),
-                data.get("user_company"),
+                clean_data.get("user"),
+                clean_data.get("company"),
+                clean_data.get("user_company"),
             ]
             authorization_was_skipped = all(field is None for field in auth_fields)
 
@@ -207,36 +238,33 @@ class TchuEvent:
                 if authorization_was_skipped:
                     # Skip authorization validation
                     event_instance.serialize_request(
-                        data,
+                        clean_data,
                         skip_authorization=True,
                         skip_reason="Authorization was skipped in original event",
                     )
                 else:
                     # Reconstruct context from event data using context helper
                     context = None
-                    helper = (
-                        event_instance._instance_context_helper or self._context_helper
-                    )
-                    if helper:
+                    if context_helper:
                         try:
-                            context = helper(data)
+                            context = context_helper(clean_data)
                         except Exception as ctx_err:
                             logger.warning(
                                 f"Context helper failed: {ctx_err}. Processing without context."
                             )
 
                     # Serialize with reconstructed context
-                    event_instance.serialize_request(data, context=context)
+                    event_instance.serialize_request(clean_data, context=context)
 
-                # Call the original handler
-                return self.handler(event_instance)
+                # Call the original handler with TchuEvent instance
+                return original_handler(event_instance)
 
             except TchuRPCException as e:
                 # Convert to response dict
                 error_response = e.to_response_dict()
                 logger.warning(
                     f"RPC error: {e.message} ({e.code})",
-                    extra={"topic": self.topic, "error_code": e.code},
+                    extra={"topic": event_class.topic, "error_code": e.code},
                 )
 
                 # Validate with error_serializer if defined
@@ -258,30 +286,37 @@ class TchuEvent:
 
             except Exception as e:
                 logger.error(
-                    f"Event handler failed for {self.__class__.__name__}: {e}",
+                    f"Event handler failed for {event_class.__name__}: {e}",
                     exc_info=True,
                 )
                 raise
 
-        # Register the handler with the registry
-        handler_name = (
-            f"{self.__class__.__name__}_{getattr(self.handler, '__name__', 'handler')}"
-        )
-        handler_id = f"{self.__class__.__module__}.{self.__class__.__name__}.{getattr(self.handler, '__name__', 'handler')}"
+        # Build metadata
+        metadata = {
+            "celery_options": self.celery_options,
+        }
 
-        # Build metadata with celery_options if provided
-        metadata = {}
-        if self.celery_options:
-            metadata["celery_options"] = self.celery_options
-
+        # Register the Celery task with the registry
         registry = get_registry()
-        return registry.register_handler(
+        registered_id = registry.register_handler(
             routing_key=self.topic,
-            handler=event_handler_wrapper,
+            handler=celery_task_handler,  # Register the Celery task, not raw function
             name=handler_name,
             handler_id=handler_id,
             metadata=metadata,
         )
+
+        logger.info(
+            f"Registered Celery task handler '{handler_name}' for topic '{self.topic}'"
+            + (
+                f" with celery_options: {list(self.celery_options.keys())}"
+                if self.celery_options
+                else ""
+            ),
+            extra={"routing_key": self.topic, "handler_id": handler_id},
+        )
+
+        return registered_id
 
     def serialize_request(
         self,

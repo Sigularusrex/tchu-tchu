@@ -15,9 +15,6 @@ from tchu_tchu.logging.handlers import (
 
 logger = get_logger(__name__)
 
-# Cache for dynamically created Celery tasks
-_dynamic_tasks: Dict[str, Any] = {}
-
 
 def subscribe(
     routing_key: str,
@@ -30,8 +27,9 @@ def subscribe(
     """
     Decorator to subscribe a function to a topic routing key.
 
-    With the new broadcast architecture, handlers are registered locally
-    and executed when messages arrive at the app's queue.
+    ALL handlers are created as Celery tasks at decorator time (import time).
+    For broadcast messages, handlers are dispatched via .delay() for async execution.
+    For RPC messages, handlers are called directly to return results.
 
     Args:
         routing_key: Topic routing key pattern (e.g., 'user.created', 'order.*')
@@ -40,13 +38,17 @@ def subscribe(
         metadata: Optional metadata dictionary
         celery_options: Optional Celery task options for native retry support.
             Supported options (passed directly to Celery task decorator):
-            - bind: bool - Bind task to self (default: True for retry support)
             - autoretry_for: tuple - Exception classes to auto-retry on
             - retry_backoff: bool/int - Enable exponential backoff
             - retry_backoff_max: int - Maximum backoff time in seconds
             - retry_jitter: bool - Add randomness to backoff
             - max_retries: int - Maximum retry attempts
             - default_retry_delay: int - Default delay between retries
+            - rate_limit: str - Task rate limit (e.g., "10/m")
+            - time_limit: int - Hard time limit in seconds
+            - soft_time_limit: int - Soft time limit in seconds
+            - acks_late: bool - Acknowledge after task completes
+            - reject_on_worker_lost: bool - Reject task if worker dies
 
     Returns:
         Decorated function
@@ -62,105 +64,71 @@ def subscribe(
                 "max_retries": 5,
             }
         )
-        def process_data(event):
+        def process_data(data):
             # Native Celery retry support!
             ...
     """
 
     def decorator(func: Callable) -> Callable:
+        from celery import shared_task
+
         # Generate handler ID if not provided
         handler_id_val = handler_id or f"{func.__module__}.{func.__name__}"
+        handler_name = name or func.__name__
+
+        # Build Celery task options
+        task_options = {
+            "name": f"tchu_tchu.handler.{handler_id_val}",
+        }
+
+        # Add celery_options if provided (retries, rate limits, etc.)
+        if celery_options:
+            task_options.update(celery_options)
+
+        # Create wrapper that removes _tchu_meta before calling handler
+        def clean_handler(data: Dict[str, Any]) -> Any:
+            """Wrapper that removes _tchu_meta before calling original handler."""
+            clean_data = {k: v for k, v in data.items() if k != "_tchu_meta"}
+            return func(clean_data)
+
+        # Create the Celery task at import time
+        celery_task = shared_task(**task_options)(clean_handler)
 
         # Build metadata
         handler_metadata = metadata.copy() if metadata else {}
-        if celery_options:
-            handler_metadata["celery_options"] = celery_options
+        handler_metadata["celery_options"] = celery_options
 
-        # Register the handler in the local registry
+        # Register the Celery task in the local registry
         registry = get_registry()
         registry.register_handler(
             routing_key=routing_key,
             handler_id=handler_id_val,
-            handler=func,
+            handler=celery_task,  # Register the Celery task, not raw function
             metadata=handler_metadata,
-            name=name or func.__name__,
+            name=handler_name,
         )
 
         logger.info(
-            f"Registered handler '{handler_id_val}' for topic '{routing_key}'"
-            + (" (with celery_options)" if celery_options else ""),
+            f"Registered Celery task handler '{handler_id_val}' for topic '{routing_key}'"
+            + (
+                f" with celery_options: {list(celery_options.keys())}"
+                if celery_options
+                else ""
+            ),
             extra={"routing_key": routing_key, "handler_id": handler_id_val},
         )
 
+        # Return the original function so it can still be called directly if needed
         @wraps(func)
         def wrapper(*args, **kwargs):
             return func(*args, **kwargs)
 
+        # Attach the Celery task to the wrapper for direct access if needed
+        wrapper.celery_task = celery_task
+
         return wrapper
 
     return decorator
-
-
-def _get_or_create_celery_task(
-    celery_app: Any,
-    handler_id: str,
-    handler_func: Callable,
-    celery_options: Dict[str, Any],
-) -> Any:
-    """
-    Get or create a Celery task for a handler with celery_options.
-
-    This dynamically creates a Celery task with the specified options,
-    giving full native Celery retry support (autoretry_for, retry_backoff, etc.).
-
-    Args:
-        celery_app: Celery app instance
-        handler_id: Unique identifier for the handler
-        handler_func: The handler function to wrap
-        celery_options: Celery task options (autoretry_for, retry_backoff, etc.)
-
-    Returns:
-        Celery task with native options applied
-    """
-    # Check cache first
-    if handler_id in _dynamic_tasks:
-        return _dynamic_tasks[handler_id]
-
-    # Build task decorator options
-    task_options = {
-        "name": f"tchu_tchu.handler.{handler_id}",
-        "bind": celery_options.get("bind", False),
-    }
-
-    # Pass through all Celery-native retry options
-    native_options = [
-        "autoretry_for",
-        "retry_backoff",
-        "retry_backoff_max",
-        "retry_jitter",
-        "max_retries",
-        "default_retry_delay",
-        "retry_kwargs",
-        "acks_late",
-        "reject_on_worker_lost",
-        "throws",
-    ]
-    for opt in native_options:
-        if opt in celery_options:
-            task_options[opt] = celery_options[opt]
-
-    # Create the Celery task dynamically
-    celery_task = celery_app.task(**task_options)(handler_func)
-
-    # Cache it
-    _dynamic_tasks[handler_id] = celery_task
-
-    logger.info(
-        f"Created dynamic Celery task for handler '{handler_id}' with options: "
-        f"{[k for k in celery_options.keys()]}"
-    )
-
-    return celery_task
 
 
 def create_topic_dispatcher(
@@ -172,6 +140,15 @@ def create_topic_dispatcher(
 
     This task should be registered in your Celery app and will be called
     when messages arrive on your app's queue from the topic exchange.
+
+    Execution behavior:
+        - RPC messages (from client.call()): Handlers are called directly to return results
+        - Broadcast messages (from client.publish()): Handlers are dispatched via .delay()
+          as async Celery tasks with native retry support
+
+    Deduplication:
+        Handler tasks use deterministic task IDs based on message_id + handler_name.
+        Celery's result backend automatically prevents duplicate task execution.
 
     Your Celery config should bind this task's queue to the tchu_events exchange:
 
@@ -246,6 +223,10 @@ def create_topic_dispatcher(
         """
         Dispatcher task that routes messages to local handlers.
 
+        Execution mode is determined by _tchu_meta.is_rpc in the message:
+        - is_rpc=True: Direct call (must return result to caller)
+        - is_rpc=False: Async dispatch via .delay() (fire-and-forget)
+
         Note: Task configuration (acks_late, track_started, etc.) should be set
         at the Celery app level in celery.py, not here, for compatibility with
         different result backends (rpc://, redis://, etc.)
@@ -259,7 +240,8 @@ def create_topic_dispatcher(
             # Try to get from Celery task metadata
             routing_key = self.request.get("routing_key", "unknown")
 
-        log_message_received(logger, routing_key, self.request.id)
+        message_id = self.request.id  # Original message task_id for deduplication
+        log_message_received(logger, routing_key, message_id)
 
         try:
             # Deserialize message
@@ -271,6 +253,10 @@ def create_topic_dispatcher(
                     deserialized = json.loads(message_body)
             else:
                 deserialized = message_body
+
+            # Extract message type from _tchu_meta
+            tchu_meta = deserialized.get("_tchu_meta", {})
+            is_rpc = tchu_meta.get("is_rpc", False)
 
             # Get all matching handlers for this routing key
             handlers = registry.get_handlers(routing_key)
@@ -285,21 +271,36 @@ def create_topic_dispatcher(
             # Execute all matching handlers
             results = []
             for handler_info in handlers:
-                handler_func = handler_info["function"]
+                handler_task = handler_info[
+                    "function"
+                ]  # This is now always a Celery task
                 handler_name = handler_info["name"]
                 handler_id = handler_info["id"]
-                metadata = handler_info.get("metadata", {})
-                celery_options = metadata.get("celery_options", {})
 
                 try:
-                    if celery_options:
-                        # Handler has celery_options - create/get dynamic Celery task
-                        # This gives full native Celery retry support
-                        celery_task = _get_or_create_celery_task(
-                            celery_app, handler_id, handler_func, celery_options
+                    if is_rpc:
+                        # RPC: Must call directly to return result to caller
+                        # Call the task function directly (not .delay())
+                        result = handler_task(deserialized)
+                        results.append(
+                            {
+                                "handler": handler_name,
+                                "status": "success",
+                                "result": result,
+                            }
                         )
-                        # Dispatch via .delay() for async execution with native retries
-                        async_result = celery_task.delay(deserialized)
+                        log_handler_executed(
+                            logger, handler_name, routing_key, message_id
+                        )
+                    else:
+                        # Broadcast: Dispatch as async Celery task
+                        # Use deterministic task_id for deduplication: message_id:handler_id
+                        handler_task_id = f"{message_id}:{handler_id}"
+
+                        async_result = handler_task.apply_async(
+                            args=[deserialized],
+                            task_id=handler_task_id,  # Celery deduplicates based on this
+                        )
                         results.append(
                             {
                                 "handler": handler_name,
@@ -309,24 +310,11 @@ def create_topic_dispatcher(
                         )
                         logger.info(
                             f"Dispatched handler '{handler_name}' as Celery task "
-                            f"with id {async_result.id} (native retry enabled)",
+                            f"with id {async_result.id}",
                             extra={
                                 "routing_key": routing_key,
                                 "task_id": async_result.id,
                             },
-                        )
-                    else:
-                        # No celery_options - call handler directly (synchronous)
-                        result = handler_func(deserialized)
-                        results.append(
-                            {
-                                "handler": handler_name,
-                                "status": "success",
-                                "result": result,
-                            }
-                        )
-                        log_handler_executed(
-                            logger, handler_name, routing_key, self.request.id
                         )
 
                 except Exception as e:
@@ -347,6 +335,7 @@ def create_topic_dispatcher(
             return {
                 "status": "completed",
                 "routing_key": routing_key,
+                "is_rpc": is_rpc,
                 "handlers_executed": len(results),
                 "results": results,
             }

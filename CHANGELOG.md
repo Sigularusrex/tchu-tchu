@@ -5,26 +5,57 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.4.0] - 2024-12-29
+## [3.0.0] - 2024-12-31
+
+### ⚠️ BREAKING CHANGES
+
+This is a major architectural change that maximizes Celery delegation:
+
+1. **ALL handlers are now Celery tasks** - Created at subscribe time (import time)
+2. **Broadcast messages run async** - Dispatched via `.delay()` instead of direct calls
+3. **RPC messages still run sync** - Direct calls to return results to caller
+4. **Native deduplication via Celery task_id** - No duplicate task execution
+
+### Changed
+
+- **Broadcast execution model**: Handlers for `publish()` messages now run as async Celery tasks
+  - Previous: Direct synchronous call within dispatcher
+  - New: Dispatched via `.apply_async()` with deterministic task_id
+  - Handlers must be idempotent (already required due to at-least-once delivery)
+
+- **RPC execution model**: Unchanged - handlers still run synchronously to return results
+
+- **Message metadata**: Messages now include `_tchu_meta.is_rpc` to determine execution mode
+  - `client.publish()` → `is_rpc: False` → async dispatch
+  - `client.call()` → `is_rpc: True` → direct call
 
 ### Added
-- **NEW**: Native Celery retry support via `celery_options` parameter
+
+- **Native Celery retry support** via `celery_options` parameter
   - Pass Celery retry options through `TchuEvent` or `@subscribe` decorator
   - Your consuming app never needs to import Celery directly!
-  - tchu-tchu dynamically creates Celery tasks with native retry capabilities
-  - Supports all major Celery retry options:
+  - Supports all major Celery task options:
     - `autoretry_for`: Tuple of exception classes to auto-retry on
     - `retry_backoff`: Enable exponential backoff (bool or int)
     - `retry_backoff_max`: Maximum backoff time in seconds
     - `retry_jitter`: Add randomness to backoff (thundering herd prevention)
     - `max_retries`: Maximum retry attempts
     - `default_retry_delay`: Default delay between retries
+    - `rate_limit`: Task rate limit (e.g., "10/m")
+    - `time_limit`: Hard time limit in seconds
+    - `soft_time_limit`: Soft time limit in seconds
     - `acks_late`: Acknowledge after task completes
     - `reject_on_worker_lost`: Reject task if worker dies
 
+- **Native deduplication** via Celery's task_id
+  - Handler task_id = `{message_id}:{handler_id}` (deterministic)
+  - Celery's result backend automatically prevents duplicate execution
+  - Requires result backend configuration (see Migration section)
+
 ### Examples
+
 ```python
-# Via TchuEvent
+# Via TchuEvent - handler receives TchuEvent instance
 DataExchangeRunInitiatedEvent(
     handler=execute_task,
     celery_options={
@@ -36,7 +67,7 @@ DataExchangeRunInitiatedEvent(
     }
 ).subscribe()
 
-# Via @subscribe decorator
+# Via @subscribe decorator - handler receives clean data dict
 @subscribe(
     'data.process',
     celery_options={
@@ -45,12 +76,53 @@ DataExchangeRunInitiatedEvent(
         "max_retries": 3,
     }
 )
-def process_data(event):
+def process_data(data):
     ...
 ```
 
-### How It Works
-When you pass `celery_options`, tchu-tchu dynamically creates a Celery task with those native options and dispatches your handler via `.delay()`. This gives you full native Celery retry support without importing Celery in your consuming app.
+### Migration from 2.x
+
+1. **Ensure result backend is configured** (required for deduplication):
+   ```python
+   # celeryconfig.py
+   result_backend = 'redis://localhost:6379/0'
+   task_ignore_result = False
+   result_expires = 3600  # 1 hour dedup window
+   ```
+
+2. **Handlers must be idempotent** - They may run multiple times (retries) or be skipped (dedup)
+
+3. **Broadcast handlers now run async** - If you relied on synchronous execution, review your code
+
+4. **Update tchu-tchu**: `pip install tchu-tchu==3.0.0`
+
+5. **Restart all workers** - Handlers are registered as Celery tasks at import time
+
+### Architecture Overview
+
+```
+Message arrives (with _tchu_meta.is_rpc flag)
+    ↓
+tchu_tchu.dispatch_event (Celery task)
+    ↓
+Registry lookup → Find handlers (all are Celery tasks now)
+    ↓
+For each handler:
+    IF is_rpc (from client.call()):
+        → Call handler directly (must return result)
+    ELSE (from client.publish()):
+        → handler.apply_async(task_id=message_id:handler_id)
+        → Celery handles retries, dedup, rate limits, etc.
+```
+
+---
+
+## [2.4.0] - 2024-12-29 (Superseded by 3.0.0)
+
+### Added
+- Initial `celery_options` support (dynamic task creation at dispatch time)
+- This approach had issues with task registration across workers
+- **Superseded by 3.0.0** which creates tasks at subscribe time
 
 ---
 
@@ -336,7 +408,8 @@ See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete instructions.
 
 ## Version History
 
-- **2.4.0** (2024-12-29): Native Celery retry support via `celery_options`
+- **3.0.0** (2024-12-31): Major architecture change - all handlers as Celery tasks, async broadcast, native dedup
+- **2.4.0** (2024-12-29): Initial celery_options support (superseded by 3.0.0)
 - **2.3.1** (2024-12-15): Minor bugfixes
 - **2.2.31** (2025-11-07): Logging improvements
 - **2.2.30** (2025-11-07): ServerlessProducer serialization fix
