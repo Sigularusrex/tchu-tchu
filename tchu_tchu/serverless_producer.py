@@ -138,8 +138,9 @@ class ServerlessProducer:
                 f"[ServerlessProducer] Starting publish: routing_key={routing_key}, message_id={message_id}"
             )
 
-            # Serialize the message body first (same as CeleryProducer)
+            # Add tchu metadata and serialize the message body (same as CeleryProducer)
             if isinstance(body, (str, bytes)):
+                # If body is already serialized, we can't add metadata
                 serialized_body = (
                     body if isinstance(body, str) else body.decode("utf-8")
                 )
@@ -148,7 +149,12 @@ class ServerlessProducer:
                     f"serialized_body type={type(serialized_body).__name__}"
                 )
             else:
-                serialized_body = dumps_message(body)
+                # Add _tchu_meta to the body for dispatcher to determine execution mode
+                body_with_meta = {
+                    **body,
+                    "_tchu_meta": {"is_rpc": False},
+                }
+                serialized_body = dumps_message(body_with_meta)
                 logger.debug(
                     f"[ServerlessProducer] Body serialized with dumps_message, "
                     f"type={type(serialized_body).__name__}, length={len(serialized_body)}"
