@@ -108,13 +108,9 @@ def subscribe(
             name=handler_name,
         )
 
-        logger.info(
-            f"Registered Celery task handler '{handler_id_val}' for topic '{routing_key}'"
-            + (
-                f" with celery_options: {list(celery_options.keys())}"
-                if celery_options
-                else ""
-            ),
+        logger.debug(
+            f"Registered handler '{handler_id_val}' for '{routing_key}'"
+            + (f" with celery_options" if celery_options else ""),
             extra={"routing_key": routing_key, "handler_id": handler_id_val},
         )
 
@@ -318,9 +314,8 @@ def create_topic_dispatcher(
                                 "task_id": async_result.id,
                             }
                         )
-                        logger.info(
-                            f"Dispatched handler '{handler_name}' as Celery task "
-                            f"with id {async_result.id}",
+                        logger.debug(
+                            f"Dispatched handler '{handler_name}' (task_id={async_result.id})",
                             extra={
                                 "routing_key": routing_key,
                                 "task_id": async_result.id,

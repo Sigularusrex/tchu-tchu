@@ -82,8 +82,8 @@ def setup_celery_queue(
             ),
         )
 
-        logger.info(
-            f"Tchu-tchu queue '{queue_name}' configured with {len(routing_keys)} routing key(s)"
+        logger.debug(
+            f"Queue '{queue_name}' configured with {len(routing_keys)} binding(s)"
         )
 
     def _import_subscriber_modules() -> None:
@@ -117,21 +117,19 @@ def setup_celery_queue(
 
     @worker_ready.connect
     def _log_on_worker_ready(sender=None, **kwargs):
-        """Log handler count when worker is fully ready."""
-        logger.info(f"Tchu-tchu worker ready for queue: {queue_name}")
-
+        """Log summary when worker is fully ready."""
         from tchu_tchu.registry import get_registry
 
         handler_count = get_registry().get_handler_count()
 
         if handler_count == 0:
             logger.warning(
-                f"No handlers registered for queue '{queue_name}'. "
+                f"Tchu-tchu: queue '{queue_name}' ready with no handlers. "
                 "Verify subscriber_modules contain @subscribe decorators."
             )
         else:
             logger.info(
-                f"Registered {handler_count} handler(s) for queue '{queue_name}'"
+                f"Tchu-tchu: queue '{queue_name}' ready ({handler_count} handlers)"
             )
 
     # Route dispatcher task to this queue (no database access needed)

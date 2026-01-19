@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Added `celeryd_after_setup` signal handler to configure queue bindings after worker setup but before consuming
 - Moved subscriber module imports from setup time to worker initialization time
+- **Reduced startup logging verbosity**: 
+  - Per-handler registration logs changed from `info` to `debug` level
+  - Per-dispatch logs changed from `info` to `debug` level
+  - Worker ready now shows single summary line: `Tchu-tchu: queue 'X' ready (N handlers)`
 - No changes required in consuming apps - API remains backward compatible
 
 ---
