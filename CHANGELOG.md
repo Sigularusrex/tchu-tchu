@@ -5,6 +5,22 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-01-19
+
+### Fixed
+- **Celery Beat DatabaseScheduler compatibility**: Fixed connection pool timeout when using `django-celery-beat` with `DatabaseScheduler`
+  - Subscriber module imports and routing key collection are now deferred until `celeryd_after_setup` signal
+  - Previously, imports happened during Celery app initialization which could exhaust database connections before Beat's scheduler initialized
+  - Celery Beat no longer triggers subscriber imports (it doesn't need them)
+  - Workers still import and configure everything correctly, just at a slightly later stage
+
+### Changed
+- Added `celeryd_after_setup` signal handler to configure queue bindings after worker setup but before consuming
+- Moved subscriber module imports from setup time to worker initialization time
+- No changes required in consuming apps - API remains backward compatible
+
+---
+
 ## [3.0.1] - 2024-12-31
 
 ### Fixed
@@ -417,6 +433,7 @@ See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete instructions.
 
 ## Version History
 
+- **3.0.2** (2026-01-19): Fixed Celery Beat DatabaseScheduler compatibility (deferred imports)
 - **3.0.1** (2024-12-31): Backward compatibility fix for 2.x publishers
 - **3.0.0** (2024-12-31): Major architecture change - all handlers as Celery tasks, async broadcast, native dedup
 - **2.4.0** (2024-12-29): Initial celery_options support (superseded by 3.0.0)
