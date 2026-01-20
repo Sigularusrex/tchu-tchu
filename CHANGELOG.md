@@ -5,6 +5,17 @@ All notable changes to tchu-tchu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-01-20
+
+### Fixed
+- **Exchange declaration during setup**: Fixed `no exchange 'tchu_events'` error
+  - 3.0.2 deferred ALL queue setup including exchange declaration, causing publish failures
+  - Now declares a basic queue with the exchange immediately during setup
+  - Subscriber imports and detailed bindings are still deferred to `celeryd_after_setup`
+  - Publishers can now send to `tchu_events` even before workers start
+
+---
+
 ## [3.0.2] - 2026-01-19
 
 ### Fixed
@@ -437,6 +448,7 @@ See [MIGRATION_2.2.11.md](./MIGRATION_2.2.11.md) for complete instructions.
 
 ## Version History
 
+- **3.0.3** (2026-01-20): Fixed exchange declaration (was missing in 3.0.2)
 - **3.0.2** (2026-01-19): Fixed Celery Beat DatabaseScheduler compatibility (deferred imports)
 - **3.0.1** (2024-12-31): Backward compatibility fix for 2.x publishers
 - **3.0.0** (2024-12-31): Major architecture change - all handlers as Celery tasks, async broadcast, native dedup

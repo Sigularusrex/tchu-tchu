@@ -95,6 +95,19 @@ def setup_celery_queue(
             except Exception as e:
                 logger.error(f"Failed to import {module}: {e}", exc_info=True)
 
+    # Configure initial queue with exchange (ensures exchange is declared)
+    # This doesn't require database access - just sets up Celery config
+    # Bindings will be updated when worker starts and imports subscribers
+    celery_app.conf.task_queues = (
+        Queue(
+            queue_name,
+            exchange=tchu_exchange,
+            routing_key=queue_name,  # Basic direct routing initially
+            durable=durable,
+            auto_delete=auto_delete,
+        ),
+    )
+
     @celeryd_after_setup.connect
     def _setup_queue_on_worker_init(sender, instance, **kwargs):
         """
@@ -112,7 +125,7 @@ def setup_celery_queue(
         # Collect routing keys from registered handlers
         all_routing_keys = get_subscribed_routing_keys()
 
-        # Configure queue with collected routing keys
+        # Update queue configuration with proper bindings
         _configure_queue_bindings(all_routing_keys)
 
     @worker_ready.connect
