@@ -129,6 +129,25 @@ def setup_celery_queue(
         _configure_queue_bindings(all_routing_keys)
 
     @worker_ready.connect
+    def _create_bindings_on_worker_ready(sender=None, **kwargs):
+        """Create broker bindings and log summary when worker is fully ready."""
+        routing_keys = get_subscribed_routing_keys()
+        if not routing_keys:
+            return
+        try:
+            with celery_app.connection() as conn:
+                channel = conn.channel()
+                for routing_key in routing_keys:
+                    channel.queue_bind(
+                        queue=queue_name,
+                        exchange=exchange_name,
+                        routing_key=routing_key,
+                    )
+            logger.info(f"Created {len(routing_keys)} queue bindings for '{queue_name}'")
+        except Exception as e:
+            logger.error(f"Failed to create queue bindings: {e}")
+
+    @worker_ready.connect
     def _log_on_worker_ready(sender=None, **kwargs):
         """Log summary when worker is fully ready."""
         from tchu_tchu.registry import get_registry
